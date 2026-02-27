@@ -37,3 +37,17 @@ select = ["E", "F", "I", "B", "UP", "SIM", "C90"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_any_unimported = true
+ignore_missing_imports = false
+
+[[tool.mypy.overrides]]
+module = "langgraph.*"
+ignore_missing_imports = true

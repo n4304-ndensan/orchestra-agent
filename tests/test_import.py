@@ -1,3 +1,3 @@
-def test_import():
+def test_import() -> None:
     import orchestra_agent
     assert orchestra_agent is not None

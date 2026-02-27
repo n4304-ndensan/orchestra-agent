@@ -18,8 +18,10 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install uv
-        run: pip install uv
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.4.28"
 
       - name: Install dependencies
         run: uv sync --dev
