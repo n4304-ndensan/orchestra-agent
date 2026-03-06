@@ -110,6 +110,20 @@ Safety properties:
 - final plan must still pass domain validation (including DAG)
 - invalid proposal is rejected and deterministic plan is used
 
+### Live OpenAI integration
+
+Enable live LLM proposal generation:
+
+```powershell
+$env:OPENAI_API_KEY="your_api_key"
+uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --llm-provider openai --llm-openai-model gpt-4.1-mini
+```
+
+Notes:
+- OpenAI is used only for proposal generation (patches).
+- The final plan still goes through strict safety validation.
+- If OpenAI output is malformed or unsafe, the planner falls back to deterministic mode.
+
 ## Development
 
 Install and run tests:

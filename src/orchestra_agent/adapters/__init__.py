@@ -4,10 +4,12 @@ from orchestra_agent.adapters.db import (
     InMemoryWorkflowRepository,
     PostgresAgentStateStore,
 )
+from orchestra_agent.adapters.llm import OpenAILlmClient
 from orchestra_agent.adapters.mcp import JsonRpcMcpClient, MockExcelMcpClient
 from orchestra_agent.adapters.planner import (
     JsonFileStepProposalProvider,
     LlmPlanner,
+    LlmStepProposalProvider,
     PlannerDefaults,
     SafeAugmentedLlmPlanner,
 )
@@ -22,8 +24,10 @@ __all__ = [
     "InMemoryWorkflowRepository",
     "JsonFileStepProposalProvider",
     "JsonRpcMcpClient",
+    "LlmStepProposalProvider",
     "MockExcelMcpClient",
     "LlmPlanner",
+    "OpenAILlmClient",
     "PlannerDefaults",
     "PostgresAgentStateStore",
     "SafeAugmentedLlmPlanner",

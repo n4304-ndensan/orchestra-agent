@@ -10,6 +10,7 @@ from orchestra_agent.domain.enums import BackupScope, RiskLevel
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
+from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest, LlmMessage
 from orchestra_agent.ports.planner import IPlanner
 
 
@@ -34,6 +35,92 @@ class JsonFileStepProposalProvider(IStepProposalProvider):
         if not isinstance(parsed, dict):
             return None
         return parsed
+
+
+class LlmStepProposalProvider(IStepProposalProvider):
+    """
+    Generates step patches from a live LLM client.
+    """
+
+    def __init__(
+        self,
+        llm_client: ILlmClient,
+        temperature: float = 0.0,
+        max_tokens: int = 1200,
+    ) -> None:
+        self._llm_client = llm_client
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+
+    def propose(self, workflow: Workflow, draft_plan: StepPlan) -> dict[str, Any] | None:
+        system_prompt = (
+            "You are a workflow plan patch generator for Excel automation.\n"
+            "Return ONLY a JSON object with this exact top-level shape:\n"
+            '{"steps":[{"step_id":"...", "field":"value"}]}\n'
+            "Rules:\n"
+            "1) Patch existing step_id only.\n"
+            "2) Do NOT add or remove steps.\n"
+            "3) Keep tool_ref within Excel tools only.\n"
+            "4) Keep output minimal and valid JSON."
+        )
+        draft_payload = {
+            "workflow": {
+                "objective": workflow.objective,
+                "constraints": workflow.constraints,
+                "success_criteria": workflow.success_criteria,
+            },
+            "draft_step_plan": {
+                "step_plan_id": draft_plan.step_plan_id,
+                "steps": [
+                    {
+                        "step_id": step.step_id,
+                        "name": step.name,
+                        "description": step.description,
+                        "tool_ref": step.tool_ref,
+                        "resolved_input": step.resolved_input,
+                        "depends_on": step.depends_on,
+                        "risk_level": step.risk_level.value,
+                        "requires_approval": step.requires_approval,
+                        "run": step.run,
+                        "skip": step.skip,
+                        "backup_scope": step.backup_scope.value,
+                    }
+                    for step in draft_plan.steps
+                ],
+            },
+        }
+        user_prompt = json.dumps(draft_payload, ensure_ascii=False, indent=2)
+
+        request = LlmGenerateRequest(
+            messages=(
+                LlmMessage(role="system", content=system_prompt),
+                LlmMessage(role="user", content=user_prompt),
+            ),
+            response_format="json_object",
+            temperature=self._temperature,
+            max_tokens=self._max_tokens,
+        )
+        raw = self._llm_client.generate(request)
+        parsed = self._extract_json(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM proposal must be a JSON object.")
+        return parsed
+
+    @staticmethod
+    def _extract_json(raw_text: str) -> Any:
+        stripped = raw_text.strip()
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("LLM proposal is not valid JSON.")
+
+        candidate = stripped[start : end + 1]
+        return json.loads(candidate)
 
 
 class SafeAugmentedLlmPlanner(IPlanner):

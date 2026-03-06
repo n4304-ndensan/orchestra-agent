@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+
+from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest
+
+
+class OpenAILlmClient(ILlmClient):
+    """
+    OpenAI chat-completions adapter.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        base_url: str = "https://api.openai.com",
+        timeout_seconds: float = 60.0,
+        transport: httpx.BaseTransport | None = None,
+    ) -> None:
+        self._model = model
+        self._base_url = base_url.rstrip("/")
+        self._client = httpx.Client(
+            timeout=timeout_seconds,
+            transport=transport,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+    def generate(self, request: LlmGenerateRequest) -> str:
+        payload = self._build_payload(request)
+        response = self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
+        response.raise_for_status()
+        return self._extract_message_text(response.json())
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _build_payload(self, request: LlmGenerateRequest) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in request.messages
+            ],
+            "temperature": request.temperature,
+        }
+        if request.response_format == "json_object":
+            payload["response_format"] = {"type": "json_object"}
+        if request.max_tokens is not None:
+            payload["max_tokens"] = request.max_tokens
+        return payload
+
+    @staticmethod
+    def _extract_message_text(body: Any) -> str:
+        message = OpenAILlmClient._extract_choice_message(body)
+        return OpenAILlmClient._extract_content_text(message.get("content"))
+
+    @staticmethod
+    def _extract_choice_message(body: Any) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise RuntimeError("OpenAI response must be an object.")
+        if "error" in body:
+            raise RuntimeError(f"OpenAI API error: {body['error']}")
+
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise RuntimeError("OpenAI response did not contain choices.")
+
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise RuntimeError("OpenAI response choice must be an object.")
+
+        message = first.get("message")
+        if not isinstance(message, dict):
+            raise RuntimeError("OpenAI response choice.message must be an object.")
+        return message
+
+    @staticmethod
+    def _extract_content_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            if parts:
+                return "".join(parts)
+
+        raise RuntimeError("OpenAI response did not contain textual message content.")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,10 +15,13 @@ from orchestra_agent.adapters import (
     JsonFileStepProposalProvider,
     JsonRpcMcpClient,
     LlmPlanner,
+    LlmStepProposalProvider,
     MockExcelMcpClient,
+    OpenAILlmClient,
     PostgresAgentStateStore,
     SafeAugmentedLlmPlanner,
 )
+from orchestra_agent.adapters.planner import IStepProposalProvider
 from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
 from orchestra_agent.application.use_cases import (
     ApproveStepPlanUseCase,
@@ -37,6 +41,7 @@ class CliRuntime:
     step_plan_repo: InMemoryStepPlanRepository
     planner: SafeAugmentedLlmPlanner
     mcp_client: JsonRpcMcpClient | MockExcelMcpClient
+    llm_client: OpenAILlmClient | None
     using_mock: bool
 
 
@@ -58,9 +63,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--mcp-endpoint", default=None, help="JSON-RPC MCP endpoint URL")
     parser.add_argument(
+        "--llm-provider",
+        choices=["none", "file", "openai"],
+        default="none",
+        help="LLM proposal source for planner augmentation",
+    )
+    parser.add_argument(
         "--llm-proposal-file",
         default=None,
-        help="Optional JSON patch file for safe LLM augmentation",
+        help="JSON patch file path when --llm-provider file",
+    )
+    parser.add_argument(
+        "--llm-openai-model",
+        default="gpt-4.1-mini",
+        help="OpenAI model name when --llm-provider openai",
+    )
+    parser.add_argument(
+        "--llm-openai-api-key-env",
+        default="OPENAI_API_KEY",
+        help="Environment variable containing OpenAI API key",
+    )
+    parser.add_argument(
+        "--llm-openai-base-url",
+        default="https://api.openai.com",
+        help="OpenAI API base URL",
+    )
+    parser.add_argument(
+        "--llm-openai-timeout",
+        type=float,
+        default=60.0,
+        help="OpenAI request timeout seconds",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature used for live LLM proposal",
+    )
+    parser.add_argument(
+        "--llm-max-tokens",
+        type=int,
+        default=1200,
+        help="Max tokens for live LLM proposal response",
     )
     parser.add_argument(
         "--auto-approve",
@@ -129,12 +173,32 @@ def _build_runtime(args: argparse.Namespace, workspace: Path, snapshots_dir: Pat
     audit_logger = InMemoryAuditLogger()
     base_planner = LlmPlanner()
 
-    proposal_provider = None
-    if args.llm_proposal_file is not None:
+    proposal_provider: IStepProposalProvider | None = None
+    llm_client: OpenAILlmClient | None = None
+    if args.llm_provider == "file":
+        if args.llm_proposal_file is None:
+            raise ValueError("--llm-proposal-file is required when --llm-provider file.")
         proposal_path = Path(args.llm_proposal_file)
         if not proposal_path.is_absolute():
             proposal_path = (workspace / proposal_path).resolve()
         proposal_provider = JsonFileStepProposalProvider(proposal_path)
+    elif args.llm_provider == "openai":
+        api_key = os.getenv(args.llm_openai_api_key_env)
+        if api_key is None or not api_key.strip():
+            raise ValueError(
+                f"Environment variable '{args.llm_openai_api_key_env}' is required for OpenAI LLM."
+            )
+        llm_client = OpenAILlmClient(
+            api_key=api_key,
+            model=args.llm_openai_model,
+            base_url=args.llm_openai_base_url,
+            timeout_seconds=args.llm_openai_timeout,
+        )
+        proposal_provider = LlmStepProposalProvider(
+            llm_client=llm_client,
+            temperature=args.llm_temperature,
+            max_tokens=args.llm_max_tokens,
+        )
 
     planner = SafeAugmentedLlmPlanner(
         base_planner=base_planner,
@@ -143,11 +207,15 @@ def _build_runtime(args: argparse.Namespace, workspace: Path, snapshots_dir: Pat
     policy_engine = DefaultPolicyEngine()
     snapshot_manager = FilesystemSnapshotManager(snapshots_dir, workspace_root=workspace)
 
-    using_mock = args.mcp_endpoint is None
+    endpoint = args.mcp_endpoint
+    if isinstance(endpoint, str) and not endpoint.strip():
+        endpoint = None
+    using_mock = endpoint is None
     if using_mock:
         mcp_client: JsonRpcMcpClient | MockExcelMcpClient = MockExcelMcpClient()
     else:
-        mcp_client = JsonRpcMcpClient(endpoint=args.mcp_endpoint)
+        assert endpoint is not None
+        mcp_client = JsonRpcMcpClient(endpoint=endpoint)
 
     compile_uc = CompileStepPlanUseCase(planner, policy_engine, step_plan_repo, audit_logger)
     create_workflow_uc = CreateWorkflowUseCase(workflow_repo, audit_logger)
@@ -180,6 +248,7 @@ def _build_runtime(args: argparse.Namespace, workspace: Path, snapshots_dir: Pat
         step_plan_repo=step_plan_repo,
         planner=planner,
         mcp_client=mcp_client,
+        llm_client=llm_client,
         using_mock=using_mock,
     )
 
@@ -252,6 +321,10 @@ def _run(args: argparse.Namespace) -> int:
         snapshots_dir = (workspace / snapshots_dir).resolve()
 
     runtime = _build_runtime(args, workspace, snapshots_dir)
+    return _execute_runtime(args, workspace, runtime)
+
+
+def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRuntime) -> int:
     try:
         created = runtime.workflow_api.create_workflow(name=args.name, objective=args.objective)
         plan = runtime.workflow_api.generate_step_plan(created["workflow_id"])
@@ -293,6 +366,8 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         if hasattr(runtime.mcp_client, "close"):
             runtime.mcp_client.close()
+        if runtime.llm_client is not None:
+            runtime.llm_client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
