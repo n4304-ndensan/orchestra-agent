@@ -70,6 +70,11 @@ flowchart TD
 
 - 1コマンド実行（CLI）
   - `uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ"`
+- workflowをXMLとして保存/再利用
+  - `--workflow-id` で既存workflow指定
+  - `--workflow-xml` でXMLインポート実行
+- workflow単位でplanをファイル保存
+  - `plan/<workflow_id>/<step_plan_id>/...`
 - Excel向け StepPlan の自動生成
 - DAG順実行、依存解決、テンプレート展開
 - 承認ゲート（自動承認/待機/再開）
@@ -100,4 +105,3 @@ flowchart TD
 - `ruff`: pass
 - `mypy`: pass
 - `pytest`: pass
-

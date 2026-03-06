@@ -23,12 +23,14 @@ class WorkflowAPI:
         objective: str,
         constraints: list[str] | None = None,
         success_criteria: list[str] | None = None,
+        workflow_id: str | None = None,
     ) -> dict[str, Any]:
         workflow = self._create_workflow_use_case.execute(
             name=name,
             objective=objective,
             constraints=constraints,
             success_criteria=success_criteria,
+            workflow_id=workflow_id,
         )
         return {
             "workflow_id": workflow.workflow_id,
@@ -69,4 +71,3 @@ class WorkflowAPI:
                 for step in result.step_plan.steps
             ],
         }
-

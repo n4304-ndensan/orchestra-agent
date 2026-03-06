@@ -1,8 +1,10 @@
 from orchestra_agent.adapters.db import (
+    FilesystemStepPlanRepository,
     InMemoryAuditLogger,
     InMemoryStepPlanRepository,
     InMemoryWorkflowRepository,
     PostgresAgentStateStore,
+    XmlWorkflowRepository,
 )
 from orchestra_agent.adapters.llm import OpenAILlmClient
 from orchestra_agent.adapters.mcp import JsonRpcMcpClient, MockExcelMcpClient
@@ -18,6 +20,7 @@ from orchestra_agent.adapters.snapshot import FilesystemSnapshotManager
 
 __all__ = [
     "DefaultPolicyEngine",
+    "FilesystemStepPlanRepository",
     "FilesystemSnapshotManager",
     "InMemoryAuditLogger",
     "InMemoryStepPlanRepository",
@@ -31,4 +34,5 @@ __all__ = [
     "PlannerDefaults",
     "PostgresAgentStateStore",
     "SafeAugmentedLlmPlanner",
+    "XmlWorkflowRepository",
 ]

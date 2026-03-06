@@ -82,6 +82,31 @@ For real MCP execution:
 uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --mcp-endpoint http://localhost:8000/mcp
 ```
 
+Workflow XML / Plan 保存:
+
+- workflow は `workflow/<workflow_id>/workflow.xml` で管理
+- workflow version は `workflow/<workflow_id>/versions/workflow_v{n}.xml`
+- feedback は `workflow/<workflow_id>/feedback/feedback_v{n}.txt`
+- step plan は `plan/<workflow_id>/<step_plan_id>/step_plan_v{n}.json`
+
+既存workflowを指定して実行:
+
+```powershell
+uv run python main.py --workflow-id wf-sales-summary --workspace .
+```
+
+workflow XMLをインポートして実行:
+
+```powershell
+uv run python main.py --workflow-xml .\workflow_source.xml --workspace .
+```
+
+workflow IDを固定して新規作成＋実行:
+
+```powershell
+uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --workflow-id wf-sales-summary --workspace .
+```
+
 ### Safe LLM augmentation
 
 Current planner is deterministic by default.

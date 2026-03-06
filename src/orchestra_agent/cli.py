@@ -5,13 +5,13 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from orchestra_agent.adapters import (
     DefaultPolicyEngine,
     FilesystemSnapshotManager,
+    FilesystemStepPlanRepository,
     InMemoryAuditLogger,
-    InMemoryStepPlanRepository,
-    InMemoryWorkflowRepository,
     JsonFileStepProposalProvider,
     JsonRpcMcpClient,
     LlmPlanner,
@@ -20,6 +20,7 @@ from orchestra_agent.adapters import (
     OpenAILlmClient,
     PostgresAgentStateStore,
     SafeAugmentedLlmPlanner,
+    XmlWorkflowRepository,
 )
 from orchestra_agent.adapters.planner import IStepProposalProvider
 from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
@@ -38,7 +39,8 @@ class CliRuntime:
     workflow_api: WorkflowAPI
     approval_api: ApprovalAPI
     run_api: RunAPI
-    step_plan_repo: InMemoryStepPlanRepository
+    workflow_repo: XmlWorkflowRepository
+    step_plan_repo: FilesystemStepPlanRepository
     planner: SafeAugmentedLlmPlanner
     mcp_client: JsonRpcMcpClient | MockExcelMcpClient
     llm_client: OpenAILlmClient | None
@@ -51,11 +53,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "objective",
+        nargs="?",
         help="High-level objective text, e.g. sales.xlsxのC列を集計してsummary.xlsxへ",
+    )
+    parser.add_argument("--workflow-id", default=None, help="Existing workflow ID to execute")
+    parser.add_argument(
+        "--workflow-xml",
+        default=None,
+        help="Path to workflow XML file to import and execute",
     )
     parser.add_argument("--name", default="Excel Automation Workflow", help="Workflow display name")
     parser.add_argument("--run-id", default="run-cli", help="Run identifier")
     parser.add_argument("--workspace", default=".", help="Workspace root for relative file paths")
+    parser.add_argument(
+        "--workflow-root",
+        default="workflow",
+        help="Workflow storage root directory",
+    )
+    parser.add_argument("--plan-root", default="plan", help="StepPlan storage root directory")
     parser.add_argument(
         "--snapshots-dir",
         default=".orchestra_snapshots",
@@ -134,72 +149,61 @@ def _resolve_path(value: str, workspace: Path) -> str:
     return str((workspace / path).resolve())
 
 
-def _rewrite_step_plan_paths(
-    step_plan_repo: InMemoryStepPlanRepository,
-    step_plan_id: str,
+def _resolve_file_arg(value: str, workspace: Path) -> Path:
+    raw = Path(value)
+    if raw.is_absolute():
+        return raw
+    if raw.exists():
+        return raw.resolve()
+    return (workspace / raw).resolve()
+
+
+def _build_llm_provider(
+    args: argparse.Namespace,
     workspace: Path,
-) -> StepPlan:
-    step_plan = step_plan_repo.get(step_plan_id)
-    if step_plan is None:
-        raise KeyError(f"StepPlan '{step_plan_id}' not found.")
-    for step in step_plan.steps:
-        for key in ("file", "output"):
-            raw = step.resolved_input.get(key)
-            if isinstance(raw, str):
-                step.resolved_input[key] = _resolve_path(raw, workspace)
-    step_plan_repo.save(step_plan)
-    return step_plan
+) -> tuple[IStepProposalProvider | None, OpenAILlmClient | None]:
+    if args.llm_provider == "none":
+        return None, None
+
+    if args.llm_provider == "file":
+        if args.llm_proposal_file is None:
+            raise ValueError("--llm-proposal-file is required when --llm-provider file.")
+        proposal_path = _resolve_file_arg(args.llm_proposal_file, workspace)
+        return JsonFileStepProposalProvider(proposal_path), None
+
+    api_key = os.getenv(args.llm_openai_api_key_env)
+    if api_key is None or not api_key.strip():
+        raise ValueError(
+            f"Environment variable '{args.llm_openai_api_key_env}' is required for OpenAI LLM."
+        )
+    llm_client = OpenAILlmClient(
+        api_key=api_key,
+        model=args.llm_openai_model,
+        base_url=args.llm_openai_base_url,
+        timeout_seconds=args.llm_openai_timeout,
+    )
+    provider = LlmStepProposalProvider(
+        llm_client=llm_client,
+        temperature=args.llm_temperature,
+        max_tokens=args.llm_max_tokens,
+    )
+    return provider, llm_client
 
 
-def _ensure_mock_source_file(step_plan: StepPlan) -> None:
-    for step in step_plan.steps:
-        if step.step_id != "open_file":
-            continue
-        file_value = step.resolved_input.get("file")
-        if not isinstance(file_value, str):
-            return
-        source = Path(file_value)
-        if source.exists():
-            return
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text("mock workbook placeholder", encoding="utf-8")
-        return
-
-
-def _build_runtime(args: argparse.Namespace, workspace: Path, snapshots_dir: Path) -> CliRuntime:
-    workflow_repo = InMemoryWorkflowRepository()
-    step_plan_repo = InMemoryStepPlanRepository()
+def _build_runtime(
+    args: argparse.Namespace,
+    workspace: Path,
+    snapshots_dir: Path,
+    workflow_root: Path,
+    plan_root: Path,
+) -> CliRuntime:
+    workflow_repo = XmlWorkflowRepository(workflow_root)
+    step_plan_repo = FilesystemStepPlanRepository(plan_root)
     state_store = PostgresAgentStateStore()
     audit_logger = InMemoryAuditLogger()
     base_planner = LlmPlanner()
 
-    proposal_provider: IStepProposalProvider | None = None
-    llm_client: OpenAILlmClient | None = None
-    if args.llm_provider == "file":
-        if args.llm_proposal_file is None:
-            raise ValueError("--llm-proposal-file is required when --llm-provider file.")
-        proposal_path = Path(args.llm_proposal_file)
-        if not proposal_path.is_absolute():
-            proposal_path = (workspace / proposal_path).resolve()
-        proposal_provider = JsonFileStepProposalProvider(proposal_path)
-    elif args.llm_provider == "openai":
-        api_key = os.getenv(args.llm_openai_api_key_env)
-        if api_key is None or not api_key.strip():
-            raise ValueError(
-                f"Environment variable '{args.llm_openai_api_key_env}' is required for OpenAI LLM."
-            )
-        llm_client = OpenAILlmClient(
-            api_key=api_key,
-            model=args.llm_openai_model,
-            base_url=args.llm_openai_base_url,
-            timeout_seconds=args.llm_openai_timeout,
-        )
-        proposal_provider = LlmStepProposalProvider(
-            llm_client=llm_client,
-            temperature=args.llm_temperature,
-            max_tokens=args.llm_max_tokens,
-        )
-
+    proposal_provider, llm_client = _build_llm_provider(args, workspace)
     planner = SafeAugmentedLlmPlanner(
         base_planner=base_planner,
         proposal_provider=proposal_provider,
@@ -245,12 +249,99 @@ def _build_runtime(args: argparse.Namespace, workspace: Path, snapshots_dir: Pat
         workflow_api=workflow_api,
         approval_api=approval_api,
         run_api=run_api,
+        workflow_repo=workflow_repo,
         step_plan_repo=step_plan_repo,
         planner=planner,
         mcp_client=mcp_client,
         llm_client=llm_client,
         using_mock=using_mock,
     )
+
+
+def _rewrite_step_plan_paths(
+    step_plan_repo: FilesystemStepPlanRepository,
+    step_plan_id: str,
+    workspace: Path,
+) -> StepPlan:
+    step_plan = step_plan_repo.get(step_plan_id)
+    if step_plan is None:
+        raise KeyError(f"StepPlan '{step_plan_id}' not found.")
+    for step in step_plan.steps:
+        for key in ("file", "output"):
+            raw = step.resolved_input.get(key)
+            if isinstance(raw, str):
+                step.resolved_input[key] = _resolve_path(raw, workspace)
+    step_plan_repo.save(step_plan)
+    return step_plan
+
+
+def _ensure_mock_source_file(step_plan: StepPlan) -> None:
+    for step in step_plan.steps:
+        if step.step_id != "open_file":
+            continue
+        file_value = step.resolved_input.get("file")
+        if not isinstance(file_value, str):
+            return
+        source = Path(file_value)
+        if source.exists():
+            return
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("mock workbook placeholder", encoding="utf-8")
+        return
+
+
+def _resolve_workflow_id(
+    args: argparse.Namespace,
+    runtime: CliRuntime,
+    workspace: Path,
+) -> str:
+    if args.workflow_xml is not None:
+        xml_path = _resolve_file_arg(args.workflow_xml, workspace)
+        imported = runtime.workflow_repo.import_from_xml(xml_path)
+        return imported.workflow_id
+
+    if args.workflow_id is not None:
+        existing = runtime.workflow_repo.get(args.workflow_id)
+        if existing is not None:
+            return existing.workflow_id
+        if args.objective is None:
+            raise ValueError("Workflow ID not found. Provide objective text to create it.")
+        created = runtime.workflow_api.create_workflow(
+            name=args.name,
+            objective=args.objective,
+            workflow_id=args.workflow_id,
+        )
+        return str(created["workflow_id"])
+
+    if args.objective is None:
+        raise ValueError("Objective is required when workflow is not specified.")
+
+    created = runtime.workflow_api.create_workflow(
+        name=args.name,
+        objective=args.objective,
+    )
+    return str(created["workflow_id"])
+
+
+def _start_and_resume(
+    args: argparse.Namespace,
+    run_api: RunAPI,
+    workflow_id: str,
+    step_plan_id: str,
+) -> dict[str, Any]:
+    run = run_api.start_run(
+        workflow_id=workflow_id,
+        step_plan_id=step_plan_id,
+        run_id=args.run_id,
+        approved=args.auto_approve,
+    )
+    resume_attempt = 0
+    while args.auto_approve and run["approval_status"] == "PENDING":
+        if resume_attempt >= args.max_resume:
+            break
+        run = run_api.resume_run(run_id=run["run_id"], approved=True)
+        resume_attempt += 1
+    return run
 
 
 def _print_plan(step_plan: StepPlan) -> None:
@@ -278,24 +369,23 @@ def _print_plan(step_plan: StepPlan) -> None:
     )
 
 
-def _print_result(run: dict[str, object], warning: str | None) -> None:
+def _print_result(run: dict[str, Any], warning: str | None) -> None:
     if warning is not None:
         print(f"[safe-llm-warning] {warning}")
 
     print("RunResult:")
     execution_history = run.get("execution_history", [])
-    if not isinstance(execution_history, list):
-        execution_history = []
     executed_steps = []
-    for item in execution_history:
-        if not isinstance(item, dict):
-            continue
-        executed_steps.append(
-            {
-                "step_id": item.get("step_id"),
-                "status": item.get("status"),
-            }
-        )
+    if isinstance(execution_history, list):
+        for item in execution_history:
+            if not isinstance(item, dict):
+                continue
+            executed_steps.append(
+                {
+                    "step_id": item.get("step_id"),
+                    "status": item.get("status"),
+                }
+            )
 
     print(
         json.dumps(
@@ -312,6 +402,43 @@ def _print_result(run: dict[str, object], warning: str | None) -> None:
     )
 
 
+def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRuntime) -> int:
+    try:
+        workflow_id = _resolve_workflow_id(args, runtime, workspace)
+        plan = runtime.workflow_api.generate_step_plan(workflow_id)
+        rewritten_plan = _rewrite_step_plan_paths(
+            runtime.step_plan_repo,
+            str(plan["step_plan_id"]),
+            workspace,
+        )
+
+        if runtime.using_mock:
+            _ensure_mock_source_file(rewritten_plan)
+        if args.print_plan:
+            _print_plan(rewritten_plan)
+        if args.auto_approve:
+            runtime.approval_api.approve_step_plan(rewritten_plan.step_plan_id)
+
+        run = _start_and_resume(
+            args=args,
+            run_api=runtime.run_api,
+            workflow_id=workflow_id,
+            step_plan_id=rewritten_plan.step_plan_id,
+        )
+        _print_result(run, runtime.planner.last_warning)
+
+        if run.get("last_error") is not None:
+            return 1
+        if run.get("approval_status") == "PENDING":
+            return 2
+        return 0
+    finally:
+        if hasattr(runtime.mcp_client, "close"):
+            runtime.mcp_client.close()
+        if runtime.llm_client is not None:
+            runtime.llm_client.close()
+
+
 def _run(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
@@ -320,54 +447,22 @@ def _run(args: argparse.Namespace) -> int:
     if not snapshots_dir.is_absolute():
         snapshots_dir = (workspace / snapshots_dir).resolve()
 
-    runtime = _build_runtime(args, workspace, snapshots_dir)
+    workflow_root = Path(args.workflow_root)
+    if not workflow_root.is_absolute():
+        workflow_root = (workspace / workflow_root).resolve()
+
+    plan_root = Path(args.plan_root)
+    if not plan_root.is_absolute():
+        plan_root = (workspace / plan_root).resolve()
+
+    runtime = _build_runtime(
+        args=args,
+        workspace=workspace,
+        snapshots_dir=snapshots_dir,
+        workflow_root=workflow_root,
+        plan_root=plan_root,
+    )
     return _execute_runtime(args, workspace, runtime)
-
-
-def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRuntime) -> int:
-    try:
-        created = runtime.workflow_api.create_workflow(name=args.name, objective=args.objective)
-        plan = runtime.workflow_api.generate_step_plan(created["workflow_id"])
-        rewritten_plan = _rewrite_step_plan_paths(
-            runtime.step_plan_repo,
-            plan["step_plan_id"],
-            workspace,
-        )
-
-        if runtime.using_mock:
-            _ensure_mock_source_file(rewritten_plan)
-        if args.print_plan:
-            _print_plan(rewritten_plan)
-
-        if args.auto_approve:
-            runtime.approval_api.approve_step_plan(rewritten_plan.step_plan_id)
-
-        run = runtime.run_api.start_run(
-            workflow_id=created["workflow_id"],
-            step_plan_id=rewritten_plan.step_plan_id,
-            run_id=args.run_id,
-            approved=args.auto_approve,
-        )
-
-        resume_attempt = 0
-        while args.auto_approve and run["approval_status"] == "PENDING":
-            if resume_attempt >= args.max_resume:
-                break
-            run = runtime.run_api.resume_run(run_id=run["run_id"], approved=True)
-            resume_attempt += 1
-
-        _print_result(run, runtime.planner.last_warning)
-
-        if run["last_error"] is not None:
-            return 1
-        if run["approval_status"] == "PENDING":
-            return 2
-        return 0
-    finally:
-        if hasattr(runtime.mcp_client, "close"):
-            runtime.mcp_client.close()
-        if runtime.llm_client is not None:
-            runtime.llm_client.close()
 
 
 def main(argv: list[str] | None = None) -> int:
