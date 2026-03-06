@@ -47,6 +47,7 @@ warn_unused_ignores = true
 warn_return_any = true
 disallow_any_unimported = true
 ignore_missing_imports = false
+exclude = "(^pytest-cache-files-.*$)|(^\\.pytest_cache.*$)|(^\\.tmp.*$)|(^\\.uv-.*$)|(^\\.venv.*$)"
 
 [[tool.mypy.overrides]]
 module = "langgraph.*"

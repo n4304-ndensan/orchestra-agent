@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 
 from orchestra_agent.domain import (
     AgentState,
@@ -16,7 +16,7 @@ from orchestra_agent.domain import (
 from orchestra_agent.executor.failure_handler import FailureContext, FailureHandler
 from orchestra_agent.ports import IAgentStateStore, IAuditLogger, IMcpClient, ISnapshotManager
 
-ResolvedValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
+type ResolvedValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 class PlanExecutor:
