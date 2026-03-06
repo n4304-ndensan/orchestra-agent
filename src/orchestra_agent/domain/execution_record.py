@@ -19,7 +19,7 @@ class ExecutionRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def pending(cls, step_id: str) -> "ExecutionRecord":
+    def pending(cls, step_id: str) -> ExecutionRecord:
         now = datetime.now(UTC)
         return cls(step_id=step_id, status=ExecutionStatus.PENDING, started_at=now)
 
@@ -42,4 +42,3 @@ class ExecutionRecord:
         now = datetime.now(UTC)
         self.started_at = now
         self.finished_at = now
-

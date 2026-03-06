@@ -131,7 +131,11 @@ class LlmPlanner(IPlanner):
 
     @staticmethod
     def _extract_output_file(text: str, default_input: str) -> str:
-        export_match = re.search(r"(?:export|save|output)\s+(?:as\s+)?([A-Za-z0-9_.-]+\.xlsx)", text, re.I)
+        export_match = re.search(
+            r"(?:export|save|output)\s+(?:as\s+)?([A-Za-z0-9_.-]+\.xlsx)",
+            text,
+            re.I,
+        )
         if export_match is not None:
             return export_match.group(1)
         stem = default_input.rsplit(".", maxsplit=1)[0]
@@ -151,4 +155,3 @@ class LlmPlanner(IPlanner):
         if match is None:
             return None
         return match.group(1).upper()
-

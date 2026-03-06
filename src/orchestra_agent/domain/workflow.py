@@ -13,7 +13,7 @@ class Workflow:
     success_criteria: list[str] = field(default_factory=list)
     feedback_history: list[str] = field(default_factory=list)
 
-    def with_feedback(self, feedback: str) -> "Workflow":
+    def with_feedback(self, feedback: str) -> Workflow:
         new_history = [*self.feedback_history, feedback]
         return Workflow(
             workflow_id=self.workflow_id,
@@ -24,4 +24,3 @@ class Workflow:
             success_criteria=[*self.success_criteria],
             feedback_history=new_history,
         )
-

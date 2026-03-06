@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from orchestra_agent.domain import AgentState, ApprovalStatus, Step, StepPlan, Workflow
+from orchestra_agent.ports import (
+    IAuditLogger,
+    IPlanner,
+    IPolicyEngine,
+    ISnapshotManager,
+    IStepPlanRepository,
+    IWorkflowRepository,
+)
+
+
+@dataclass(slots=True)
+class FailureContext:
+    workflow: Workflow
+    step_plan: StepPlan
+    state: AgentState
+    failed_step: Step
+    error_message: str
+    snapshot_ref: str | None
+
+
+@dataclass(slots=True)
+class RecoveryDecision:
+    should_replan: bool
+    workflow: Workflow | None
+    step_plan: StepPlan | None
+    approval_status: ApprovalStatus
+    reason: str
+
+
+class FailureHandler:
+    def __init__(
+        self,
+        snapshot_manager: ISnapshotManager,
+        planner: IPlanner,
+        policy_engine: IPolicyEngine,
+        step_plan_repository: IStepPlanRepository,
+        audit_logger: IAuditLogger,
+        workflow_repository: IWorkflowRepository | None = None,
+        max_replans: int = 1,
+    ) -> None:
+        self._snapshot_manager = snapshot_manager
+        self._planner = planner
+        self._policy_engine = policy_engine
+        self._step_plan_repository = step_plan_repository
+        self._audit_logger = audit_logger
+        self._workflow_repository = workflow_repository
+        self._max_replans = max_replans
+
+    def handle_failure(self, context: FailureContext, replan_attempt: int) -> RecoveryDecision:
+        if context.snapshot_ref is not None:
+            self._snapshot_manager.restore_snapshot(context.snapshot_ref)
+
+        self._audit_logger.record(
+            {
+                "event_type": "execution_failure",
+                "run_id": context.state.run_id,
+                "step_id": context.failed_step.step_id,
+                "error": context.error_message,
+                "replan_attempt": replan_attempt,
+            }
+        )
+
+        if replan_attempt >= self._max_replans:
+            return RecoveryDecision(
+                should_replan=False,
+                workflow=None,
+                step_plan=None,
+                approval_status=ApprovalStatus.REJECTED,
+                reason="Replan limit reached.",
+            )
+
+        feedback = (
+            f"Execution failed at step '{context.failed_step.step_id}' with error: "
+            f"{context.error_message}"
+        )
+        updated_workflow = context.workflow.with_feedback(feedback)
+        if self._workflow_repository is not None:
+            self._workflow_repository.save(updated_workflow)
+
+        replanned = self._planner.compile_step_plan(updated_workflow)
+        evaluated = self._policy_engine.evaluate(replanned)
+        self._step_plan_repository.save(evaluated.step_plan)
+
+        self._audit_logger.record(
+            {
+                "event_type": "replanned_step_plan",
+                "run_id": context.state.run_id,
+                "workflow_id": updated_workflow.workflow_id,
+                "workflow_version": updated_workflow.version,
+                "step_plan_id": evaluated.step_plan.step_plan_id,
+                "step_plan_version": evaluated.step_plan.version,
+                "approval_status": evaluated.approval_status.value,
+            }
+        )
+
+        return RecoveryDecision(
+            should_replan=True,
+            workflow=updated_workflow,
+            step_plan=evaluated.step_plan,
+            approval_status=evaluated.approval_status,
+            reason="Replanned after failure.",
+        )
+

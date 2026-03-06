@@ -32,7 +32,9 @@ class FilesystemSnapshotManager(ISnapshotManager):
         if scope == BackupScope.FILE:
             source_file = self._extract_file_path(payload["metadata"])
             if source_file is None:
-                raise ValueError("FILE snapshot requires metadata containing 'file' or 'file_path'.")
+                raise ValueError(
+                    "FILE snapshot requires metadata containing 'file' or 'file_path'."
+                )
             source = Path(source_file)
             if not source.is_file():
                 raise FileNotFoundError(f"Snapshot source file not found: {source}.")
@@ -98,4 +100,3 @@ class FilesystemSnapshotManager(ISnapshotManager):
             target_root.mkdir(parents=True, exist_ok=True)
             for file_name in files:
                 shutil.copy2(root / file_name, target_root / file_name)
-

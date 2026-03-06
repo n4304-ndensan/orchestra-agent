@@ -3,7 +3,14 @@ from orchestra_agent.adapters.db import (
     InMemoryWorkflowRepository,
     PostgresAgentStateStore,
 )
-from orchestra_agent.domain import AgentState, ExecutionRecord, ExecutionStatus, Step, StepPlan, Workflow
+from orchestra_agent.domain import (
+    AgentState,
+    ExecutionRecord,
+    ExecutionStatus,
+    Step,
+    StepPlan,
+    Workflow,
+)
 
 
 def test_agent_state_store_append_execution() -> None:
@@ -39,4 +46,3 @@ def test_in_memory_step_plan_repository_latest() -> None:
     latest = repo.get("sp-1")
     assert latest is not None
     assert latest.version == 2
-
