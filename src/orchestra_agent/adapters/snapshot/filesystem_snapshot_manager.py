@@ -22,15 +22,16 @@ class FilesystemSnapshotManager(ISnapshotManager):
         snapshot_dir = self._base_dir / snapshot_ref
         snapshot_dir.mkdir(parents=True, exist_ok=False)
 
-        payload = {
+        metadata_payload: dict[str, Any] = metadata or {}
+        payload: dict[str, Any] = {
             "snapshot_ref": snapshot_ref,
             "scope": scope.value,
             "created_at": datetime.now(UTC).isoformat(),
-            "metadata": metadata or {},
+            "metadata": metadata_payload,
         }
 
         if scope == BackupScope.FILE:
-            source_file = self._extract_file_path(payload["metadata"])
+            source_file = self._extract_file_path(metadata_payload)
             if source_file is None:
                 raise ValueError(
                     "FILE snapshot requires metadata containing 'file' or 'file_path'."

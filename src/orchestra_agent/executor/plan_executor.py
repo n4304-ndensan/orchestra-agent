@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, TypeAlias, cast
 
 from orchestra_agent.domain import (
     AgentState,
@@ -16,7 +16,7 @@ from orchestra_agent.domain import (
 from orchestra_agent.executor.failure_handler import FailureContext, FailureHandler
 from orchestra_agent.ports import IAgentStateStore, IAuditLogger, IMcpClient, ISnapshotManager
 
-ResolvedValue = dict[str, Any] | list[Any] | str | int | float | bool | None
+ResolvedValue: TypeAlias = dict[str, Any] | list[Any] | str | int | float | bool | None
 
 
 class PlanExecutor:
@@ -113,7 +113,7 @@ class PlanExecutor:
             record.mark_running()
 
             try:
-                resolved_input = self._resolve_input(step.resolved_input, step_results)
+                resolved_input = self._resolve_step_input(step.resolved_input, step_results)
                 result = self._mcp_client.call_tool(step.tool_ref, resolved_input)
                 record.mark_success(result=result)
                 step_results[step.step_id] = result
@@ -192,15 +192,29 @@ class PlanExecutor:
             metadata["file"] = file_path
         return self._snapshot_manager.create_snapshot(scope=step.backup_scope, metadata=metadata)
 
+    def _resolve_step_input(
+        self,
+        input_payload: dict[str, Any],
+        step_results: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        resolved = self._resolve_input(input_payload, step_results)
+        if not isinstance(resolved, dict):
+            raise TypeError("Resolved step input must be a dictionary.")
+        return resolved
+
     def _resolve_input(
         self,
         value: ResolvedValue,
         step_results: dict[str, dict[str, Any]],
     ) -> ResolvedValue:
         if isinstance(value, dict):
-            return {k: self._resolve_input(v, step_results) for k, v in value.items()}
+            resolved_dict: dict[str, Any] = {
+                k: self._resolve_input(v, step_results) for k, v in value.items()
+            }
+            return resolved_dict
         if isinstance(value, list):
-            return [self._resolve_input(v, step_results) for v in value]
+            resolved_list: list[Any] = [self._resolve_input(v, step_results) for v in value]
+            return resolved_list
         if not isinstance(value, str):
             return value
 
@@ -227,7 +241,7 @@ class PlanExecutor:
         step_results: dict[str, dict[str, Any]],
         step_id: str,
         key_path: str,
-    ) -> Any:
+    ) -> ResolvedValue:
         data = step_results.get(step_id)
         if data is None:
             raise KeyError(f"No execution result found for dependency step '{step_id}'.")
@@ -237,4 +251,14 @@ class PlanExecutor:
                 value = value[part]
             else:
                 raise KeyError(f"Missing key path '{key_path}' in step result '{step_id}'.")
-        return value
+        return PlanExecutor._to_resolved_value(value)
+
+    @staticmethod
+    def _to_resolved_value(value: Any) -> ResolvedValue:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return cast(dict[str, Any], value)
+        if isinstance(value, list):
+            return value
+        raise TypeError(f"Unsupported resolved value type: {type(value).__name__}")
