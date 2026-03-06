@@ -65,6 +65,51 @@ Execution behavior:
 - snapshot before mutating steps
 - failure pipeline: restore -> log -> feedback -> replan -> approval -> resume
 
+## Quick start
+
+Run from one command (mock MCP mode):
+
+```powershell
+uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ"
+```
+
+For real MCP execution:
+
+```powershell
+uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --mcp-endpoint http://localhost:8000/mcp
+```
+
+### Safe LLM augmentation
+
+Current planner is deterministic by default.
+You can safely augment it by giving a proposal patch file:
+
+```powershell
+uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --llm-proposal-file llm_patch.json
+```
+
+`llm_patch.json` example:
+
+```json
+{
+  "steps": [
+    {
+      "step_id": "calculate_totals",
+      "resolved_input": {
+        "column": "D"
+      }
+    }
+  ]
+}
+```
+
+Safety properties:
+- starts from deterministic draft plan
+- proposal may patch existing steps only
+- tool refs are restricted to Excel allow-list
+- final plan must still pass domain validation (including DAG)
+- invalid proposal is rejected and deterministic plan is used
+
 ## Development
 
 Install and run tests:

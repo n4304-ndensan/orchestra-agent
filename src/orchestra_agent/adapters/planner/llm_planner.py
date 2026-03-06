@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import cast
 from uuid import uuid4
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
@@ -126,8 +127,10 @@ class LlmPlanner(IPlanner):
 
     @staticmethod
     def _extract_excel_file(text: str) -> str | None:
-        match = re.search(r"([A-Za-z0-9_.-]+\.xlsx)", text)
-        return match.group(1) if match is not None else None
+        matches = re.findall(r"([A-Za-z0-9_.-]+\.xlsx)", text)
+        if not matches:
+            return None
+        return cast(str, matches[0])
 
     @staticmethod
     def _extract_output_file(text: str, default_input: str) -> str:
@@ -137,7 +140,10 @@ class LlmPlanner(IPlanner):
             re.I,
         )
         if export_match is not None:
-            return export_match.group(1)
+            return cast(str, export_match.group(1))
+        all_files = re.findall(r"([A-Za-z0-9_.-]+\.xlsx)", text)
+        if len(all_files) >= 2:
+            return cast(str, all_files[-1])
         stem = default_input.rsplit(".", maxsplit=1)[0]
         return f"{stem}_summary.xlsx"
 
@@ -152,6 +158,9 @@ class LlmPlanner(IPlanner):
     @staticmethod
     def _extract_column(text: str) -> str | None:
         match = re.search(r"column\s*([A-Za-z]{1,3})", text, re.I)
-        if match is None:
+        if match is not None:
+            return match.group(1).upper()
+        jp_match = re.search(r"([A-Za-z]{1,3})\s*列", text)
+        if jp_match is None:
             return None
-        return match.group(1).upper()
+        return jp_match.group(1).upper()

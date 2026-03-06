@@ -32,6 +32,20 @@ def test_llm_planner_generates_excel_step_plan() -> None:
     assert plan.step_map()["save_file"].resolved_input["output"] == "summary.xlsx"
 
 
+def test_llm_planner_supports_japanese_objective() -> None:
+    workflow = Workflow(
+        workflow_id="wf-jp",
+        name="JP Excel summary",
+        version=1,
+        objective="sales.xlsxのC列を集計してsummary.xlsxへ",
+    )
+    planner = LlmPlanner()
+    plan = planner.compile_step_plan(workflow)
+
+    assert plan.step_map()["calculate_totals"].resolved_input["column"] == "C"
+    assert plan.step_map()["save_file"].resolved_input["output"] == "summary.xlsx"
+
+
 def test_default_policy_engine_returns_pending_for_high_risk_step() -> None:
     plan = StepPlan(
         step_plan_id="sp-1",
