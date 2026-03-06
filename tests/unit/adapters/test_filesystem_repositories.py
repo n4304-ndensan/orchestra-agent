@@ -34,6 +34,9 @@ def test_xml_workflow_repository_save_and_load() -> None:
         assert loaded_v2 is not None
         assert loaded_v2.feedback_history[-1] == "write_summary failed once"
         assert (base / "workflow" / "wf-xml" / "feedback" / "feedback_v2.txt").is_file()
+
+        repo.lock_workflow("wf-xml")
+        assert repo.is_locked("wf-xml") is True
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -66,5 +69,11 @@ def test_filesystem_step_plan_repository_save_and_load() -> None:
         assert (
             base / "plan" / "wf-xml" / "sp-filesystem" / "step_plan_latest.json"
         ).is_file()
+        assert (
+            base / "plan" / "wf-xml" / "sp-filesystem" / "step_plan_latest.xml"
+        ).is_file()
+
+        repo.lock_step_plan("wf-xml", "sp-filesystem")
+        assert repo.is_locked("wf-xml", "sp-filesystem") is True
     finally:
         shutil.rmtree(base, ignore_errors=True)

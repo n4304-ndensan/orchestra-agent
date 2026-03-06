@@ -11,8 +11,11 @@ from orchestra_agent.ports.workflow_repository import IWorkflowRepository
 class InMemoryWorkflowRepository(IWorkflowRepository):
     def __init__(self) -> None:
         self._items: dict[tuple[str, int], Workflow] = {}
+        self._locked_workflows: set[str] = set()
 
     def save(self, workflow: Workflow) -> None:
+        if workflow.workflow_id in self._locked_workflows:
+            raise PermissionError(f"Workflow '{workflow.workflow_id}' is locked.")
         self._items[(workflow.workflow_id, workflow.version)] = deepcopy(workflow)
 
     def get(self, workflow_id: str, version: int | None = None) -> Workflow | None:
@@ -26,12 +29,22 @@ class InMemoryWorkflowRepository(IWorkflowRepository):
         latest = max(candidates, key=lambda workflow: workflow.version)
         return deepcopy(latest)
 
+    def lock_workflow(self, workflow_id: str) -> None:
+        self._locked_workflows.add(workflow_id)
+
+    def is_locked(self, workflow_id: str) -> bool:
+        return workflow_id in self._locked_workflows
+
 
 class InMemoryStepPlanRepository(IStepPlanRepository):
     def __init__(self) -> None:
         self._items: dict[tuple[str, int], StepPlan] = {}
+        self._locked_step_plans: set[tuple[str, str]] = set()
 
     def save(self, step_plan: StepPlan) -> None:
+        key = (step_plan.workflow_id, step_plan.step_plan_id)
+        if key in self._locked_step_plans:
+            raise PermissionError(f"StepPlan '{step_plan.step_plan_id}' is locked.")
         self._items[(step_plan.step_plan_id, step_plan.version)] = deepcopy(step_plan)
 
     def get(self, step_plan_id: str, version: int | None = None) -> StepPlan | None:
@@ -45,3 +58,8 @@ class InMemoryStepPlanRepository(IStepPlanRepository):
         latest = max(candidates, key=lambda step_plan: step_plan.version)
         return deepcopy(latest)
 
+    def lock_step_plan(self, workflow_id: str, step_plan_id: str) -> None:
+        self._locked_step_plans.add((workflow_id, step_plan_id))
+
+    def is_locked(self, workflow_id: str, step_plan_id: str) -> bool:
+        return (workflow_id, step_plan_id) in self._locked_step_plans

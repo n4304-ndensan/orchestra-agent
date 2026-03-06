@@ -65,6 +65,62 @@ class FailureHandler:
             }
         )
 
+        feedback = (
+            f"Execution failed at step '{context.failed_step.step_id}' with error: "
+            f"{context.error_message}"
+        )
+        return self._replan_with_feedback(
+            workflow=context.workflow,
+            run_id=context.state.run_id,
+            feedback=feedback,
+            replan_attempt=replan_attempt,
+            event_type="replanned_step_plan",
+            reason="Replanned after failure.",
+        )
+
+    def handle_feedback(
+        self,
+        workflow: Workflow,
+        step_plan: StepPlan,
+        state: AgentState,
+        reviewed_step: Step,
+        feedback: str,
+        snapshot_ref: str | None,
+        replan_attempt: int = 0,
+    ) -> RecoveryDecision:
+        if snapshot_ref is not None:
+            self._snapshot_manager.restore_snapshot(snapshot_ref)
+
+        self._audit_logger.record(
+            {
+                "event_type": "step_feedback_received",
+                "run_id": state.run_id,
+                "workflow_id": workflow.workflow_id,
+                "step_plan_id": step_plan.step_plan_id,
+                "step_id": reviewed_step.step_id,
+                "feedback": feedback,
+            }
+        )
+
+        message = f"User feedback for step '{reviewed_step.step_id}': {feedback}"
+        return self._replan_with_feedback(
+            workflow=workflow,
+            run_id=state.run_id,
+            feedback=message,
+            replan_attempt=replan_attempt,
+            event_type="replanned_from_feedback",
+            reason="Replanned after user feedback.",
+        )
+
+    def _replan_with_feedback(
+        self,
+        workflow: Workflow,
+        run_id: str,
+        feedback: str,
+        replan_attempt: int,
+        event_type: str,
+        reason: str,
+    ) -> RecoveryDecision:
         if replan_attempt >= self._max_replans:
             return RecoveryDecision(
                 should_replan=False,
@@ -74,11 +130,7 @@ class FailureHandler:
                 reason="Replan limit reached.",
             )
 
-        feedback = (
-            f"Execution failed at step '{context.failed_step.step_id}' with error: "
-            f"{context.error_message}"
-        )
-        updated_workflow = context.workflow.with_feedback(feedback)
+        updated_workflow = workflow.with_feedback(feedback)
         if self._workflow_repository is not None:
             self._workflow_repository.save(updated_workflow)
 
@@ -88,8 +140,8 @@ class FailureHandler:
 
         self._audit_logger.record(
             {
-                "event_type": "replanned_step_plan",
-                "run_id": context.state.run_id,
+                "event_type": event_type,
+                "run_id": run_id,
                 "workflow_id": updated_workflow.workflow_id,
                 "workflow_version": updated_workflow.version,
                 "step_plan_id": evaluated.step_plan.step_plan_id,
@@ -103,6 +155,5 @@ class FailureHandler:
             workflow=updated_workflow,
             step_plan=evaluated.step_plan,
             approval_status=evaluated.approval_status,
-            reason="Replanned after failure.",
+            reason=reason,
         )
-

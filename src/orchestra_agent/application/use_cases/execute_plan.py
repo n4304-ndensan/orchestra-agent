@@ -47,3 +47,29 @@ class ExecutePlanUseCase:
         )
         return self._executor.execute(workflow=workflow, step_plan=step_plan, state=state)
 
+    def apply_feedback(
+        self,
+        workflow: Workflow,
+        step_plan: StepPlan,
+        run_id: str,
+        feedback: str,
+    ) -> AgentState:
+        state = self._state_store.load(run_id)
+        if state is None:
+            raise KeyError(f"Run '{run_id}' not found.")
+
+        self._audit_logger.record(
+            {
+                "event_type": "run_feedback_submitted",
+                "run_id": run_id,
+                "workflow_id": workflow.workflow_id,
+                "step_plan_id": step_plan.step_plan_id,
+                "feedback": feedback,
+            }
+        )
+        return self._executor.submit_feedback(
+            workflow=workflow,
+            step_plan=step_plan,
+            state=state,
+            feedback=feedback,
+        )

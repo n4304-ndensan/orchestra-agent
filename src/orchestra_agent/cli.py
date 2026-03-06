@@ -130,7 +130,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-resume",
         type=int,
-        default=3,
+        default=50,
         help="Maximum auto-resume attempts when approval becomes pending",
     )
     parser.add_argument(
@@ -393,6 +393,7 @@ def _print_result(run: dict[str, Any], warning: str | None) -> None:
                 "run_id": run.get("run_id"),
                 "approval_status": run.get("approval_status"),
                 "current_step_id": run.get("current_step_id"),
+                "pending_approval": run.get("pending_approval"),
                 "last_error": run.get("last_error"),
                 "executed_steps": executed_steps,
             },

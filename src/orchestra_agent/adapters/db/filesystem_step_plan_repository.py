@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,7 +18,12 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
     Layout:
     - <root>/<workflow_id>/<step_plan_id>/step_plan_v{n}.json
     - <root>/<workflow_id>/<step_plan_id>/step_plan_latest.json
+    - <root>/<workflow_id>/<step_plan_id>/step_plan_v{n}.xml
+    - <root>/<workflow_id>/<step_plan_id>/step_plan_latest.xml
+    - <root>/<workflow_id>/<step_plan_id>/step_plan.lock
     """
+
+    _lock_file_name = "step_plan.lock"
 
     def __init__(self, root_dir: Path) -> None:
         self._root_dir = root_dir
@@ -25,13 +31,23 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
 
     def save(self, step_plan: StepPlan) -> None:
         plan_dir = self._plan_dir(step_plan.workflow_id, step_plan.step_plan_id)
+        if self.is_locked(step_plan.workflow_id, step_plan.step_plan_id):
+            raise PermissionError(
+                f"StepPlan '{step_plan.step_plan_id}' is locked and cannot be modified."
+            )
         plan_dir.mkdir(parents=True, exist_ok=True)
 
         payload = self._serialize(step_plan)
-        version_path = plan_dir / f"step_plan_v{step_plan.version}.json"
-        latest_path = plan_dir / "step_plan_latest.json"
-        version_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        latest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        version_json = plan_dir / f"step_plan_v{step_plan.version}.json"
+        latest_json = plan_dir / "step_plan_latest.json"
+        version_xml = plan_dir / f"step_plan_v{step_plan.version}.xml"
+        latest_xml = plan_dir / "step_plan_latest.xml"
+
+        version_json.write_text(json_text, encoding="utf-8")
+        latest_json.write_text(json_text, encoding="utf-8")
+        self._write_xml(step_plan, version_xml)
+        self._write_xml(step_plan, latest_xml)
 
     def get(self, step_plan_id: str, version: int | None = None) -> StepPlan | None:
         if version is not None:
@@ -52,6 +68,18 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
             return None
         latest_version_file = sorted(version_candidates)[-1]
         return self._deserialize(latest_version_file)
+
+    def lock_step_plan(self, workflow_id: str, step_plan_id: str) -> None:
+        plan_dir = self._plan_dir(workflow_id, step_plan_id)
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = plan_dir / self._lock_file_name
+        if lock_path.is_file():
+            return
+        lock_path.write_text("locked", encoding="utf-8")
+
+    def is_locked(self, workflow_id: str, step_plan_id: str) -> bool:
+        lock_path = self._plan_dir(workflow_id, step_plan_id) / self._lock_file_name
+        return lock_path.is_file()
 
     def _plan_dir(self, workflow_id: str, step_plan_id: str) -> Path:
         return self._root_dir / workflow_id / step_plan_id
@@ -79,6 +107,44 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
                 for step in step_plan.steps
             ],
         }
+
+    @staticmethod
+    def _write_xml(step_plan: StepPlan, path: Path) -> None:
+        root = ET.Element(
+            "step_plan",
+            attrib={
+                "id": step_plan.step_plan_id,
+                "workflow_id": step_plan.workflow_id,
+                "version": str(step_plan.version),
+            },
+        )
+        steps_elem = ET.SubElement(root, "steps")
+        for step in step_plan.steps:
+            step_elem = ET.SubElement(
+                steps_elem,
+                "step",
+                attrib={
+                    "id": step.step_id,
+                    "tool_ref": step.tool_ref,
+                    "risk_level": step.risk_level.value,
+                    "requires_approval": str(step.requires_approval).lower(),
+                    "run": str(step.run).lower(),
+                    "skip": str(step.skip).lower(),
+                    "backup_scope": step.backup_scope.value,
+                },
+            )
+            ET.SubElement(step_elem, "name").text = step.name
+            ET.SubElement(step_elem, "description").text = step.description
+
+            depends_on = ET.SubElement(step_elem, "depends_on")
+            for dep in step.depends_on:
+                ET.SubElement(depends_on, "step_id").text = dep
+
+            resolved_input = ET.SubElement(step_elem, "resolved_input")
+            resolved_input.text = json.dumps(step.resolved_input, ensure_ascii=False)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
     @staticmethod
     def _deserialize(path: Path) -> StepPlan:
@@ -128,4 +194,3 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
             version=int(payload.get("version", 1)),
             steps=steps,
         )
-

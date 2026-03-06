@@ -15,7 +15,10 @@ class XmlWorkflowRepository(IWorkflowRepository):
     - <root>/<workflow_id>/workflow.xml                     (latest)
     - <root>/<workflow_id>/versions/workflow_v{n}.xml       (versioned)
     - <root>/<workflow_id>/feedback/feedback_v{n}.txt       (latest feedback for version n)
+    - <root>/<workflow_id>/workflow.lock                    (immutable marker)
     """
+
+    _lock_file_name = "workflow.lock"
 
     def __init__(self, root_dir: Path) -> None:
         self._root_dir = root_dir
@@ -23,6 +26,10 @@ class XmlWorkflowRepository(IWorkflowRepository):
 
     def save(self, workflow: Workflow) -> None:
         workflow_dir = self._root_dir / workflow.workflow_id
+        if self.is_locked(workflow.workflow_id):
+            raise PermissionError(
+                f"Workflow '{workflow.workflow_id}' is locked and cannot be modified."
+            )
         versions_dir = workflow_dir / "versions"
         feedback_dir = workflow_dir / "feedback"
         versions_dir.mkdir(parents=True, exist_ok=True)
@@ -59,6 +66,18 @@ class XmlWorkflowRepository(IWorkflowRepository):
         workflow = self._read_workflow_xml(xml_path)
         self.save(workflow)
         return workflow
+
+    def lock_workflow(self, workflow_id: str) -> None:
+        workflow_dir = self._root_dir / workflow_id
+        workflow_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = workflow_dir / self._lock_file_name
+        if lock_path.is_file():
+            return
+        lock_path.write_text("locked", encoding="utf-8")
+
+    def is_locked(self, workflow_id: str) -> bool:
+        lock_path = self._root_dir / workflow_id / self._lock_file_name
+        return lock_path.is_file()
 
     @staticmethod
     def _write_workflow_xml(workflow: Workflow, path: Path) -> None:
@@ -138,4 +157,3 @@ class XmlWorkflowRepository(IWorkflowRepository):
         if parent is None:
             return []
         return [item.text or "" for item in parent.findall("item")]
-

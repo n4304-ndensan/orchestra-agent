@@ -61,13 +61,15 @@ class LlmStepProposalProvider(IStepProposalProvider):
             "1) Patch existing step_id only.\n"
             "2) Do NOT add or remove steps.\n"
             "3) Keep tool_ref within Excel tools only.\n"
-            "4) Keep output minimal and valid JSON."
+            "4) Respect workflow.feedback_history as the latest correction intent.\n"
+            "5) Keep output minimal and valid JSON."
         )
         draft_payload = {
             "workflow": {
                 "objective": workflow.objective,
                 "constraints": workflow.constraints,
                 "success_criteria": workflow.success_criteria,
+                "feedback_history": workflow.feedback_history,
             },
             "draft_step_plan": {
                 "step_plan_id": draft_plan.step_plan_id,

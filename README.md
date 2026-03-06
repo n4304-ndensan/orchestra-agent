@@ -64,9 +64,11 @@ Execution behavior:
 
 - dependency-aware (DAG)
 - skip/run flags respected
-- approval wait on protected steps
+- mandatory approval before every step execution
+- mandatory review approval after every step execution (approve or feedback)
 - snapshot before mutating steps
-- failure pipeline: restore -> log -> feedback -> replan -> approval -> resume
+- failure/feedback pipeline: restore -> log -> workflow XML feedback update -> replan -> approval -> resume
+- final completion locks workflow and step plan artifacts
 
 ## Quick start
 
@@ -80,6 +82,13 @@ For real MCP execution:
 
 ```powershell
 uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ" --mcp-endpoint http://localhost:8000/mcp
+```
+
+MCP server scaffold (stdio, file tools):
+
+```powershell
+pip install ".[mcp-server]"
+uv run python -m orchestra_agent.mcp_server --workspace .
 ```
 
 Workflow XML / Plan 保存:

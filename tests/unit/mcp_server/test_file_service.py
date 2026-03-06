@@ -1,0 +1,59 @@
+from __future__ import annotations
+
+import shutil
+from collections.abc import Iterator
+from pathlib import Path
+from uuid import uuid4
+
+import pytest
+
+from orchestra_agent.mcp_server.file_service import WorkspaceFileService
+
+
+@pytest.fixture()
+def sandbox_dir() -> Iterator[Path]:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_write_and_read_text_file(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    write_result = service.write_text("notes/todo.txt", "hello")
+
+    assert write_result["path"] == "notes/todo.txt"
+    assert service.read_text("notes/todo.txt") == "hello"
+
+
+def test_list_entries_sorted_directory_first(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    (sandbox_dir / "dir-b").mkdir()
+    (sandbox_dir / "a.txt").write_text("a", encoding="utf-8")
+    (sandbox_dir / "dir-a").mkdir()
+
+    entries = service.list_entries(".")
+    names = [entry["name"] for entry in entries]
+    assert names == ["dir-a", "dir-b", "a.txt"]
+
+
+def test_write_without_overwrite_raises(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    service.write_text("same.txt", "v1")
+    with pytest.raises(FileExistsError):
+        service.write_text("same.txt", "v2")
+
+
+def test_read_outside_workspace_is_blocked(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    with pytest.raises(PermissionError):
+        service.read_text("../outside.txt")
+
+
+def test_read_size_limit_is_enforced(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir, max_read_bytes=3)
+    (sandbox_dir / "big.txt").write_text("1234", encoding="utf-8")
+    with pytest.raises(ValueError):
+        service.read_text("big.txt")
