@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+.venv-uv
+
+# Local tool caches
+.uv-cache/
+.uv-python/
+.pytest_cache_local/
+.tmp/
+.tmp-tests/
