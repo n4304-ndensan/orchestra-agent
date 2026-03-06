@@ -2,6 +2,9 @@
 
 Workflow-driven orchestration control plane for Excel automation via MCP servers.
 
+資料:
+- [Current Status and Flow](docs/current-status.md)
+
 ## Purpose
 
 `orchestra-agent` manages:
