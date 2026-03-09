@@ -10,7 +10,11 @@ from orchestra_agent.adapters.db import (
 )
 from orchestra_agent.adapters.execution import LlmStepExecutor
 from orchestra_agent.adapters.llm import GoogleGeminiLlmClient, OpenAILlmClient
-from orchestra_agent.adapters.mcp import JsonRpcMcpClient, MockExcelMcpClient
+from orchestra_agent.adapters.mcp import (
+    JsonRpcMcpClient,
+    MockExcelMcpClient,
+    MultiEndpointMcpClient,
+)
 from orchestra_agent.adapters.planner import (
     JsonFileStepProposalProvider,
     LlmPlanner,
@@ -37,6 +41,7 @@ __all__ = [
     "LlmStepExecutor",
     "LlmStepProposalProvider",
     "MockExcelMcpClient",
+    "MultiEndpointMcpClient",
     "LlmPlanner",
     "OpenAILlmClient",
     "PlannerDefaults",

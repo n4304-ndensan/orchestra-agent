@@ -29,25 +29,41 @@ def workspace_dir() -> Iterator[Path]:
 
 
 @pytest.fixture()
-def mcp_endpoint(workspace_dir: Path) -> Iterator[str]:
-    server = JsonRpcMcpHttpServer(
+def mcp_endpoints(workspace_dir: Path) -> Iterator[tuple[str, str]]:
+    files_server = JsonRpcMcpHttpServer(
         ("127.0.0.1", 0),
         JsonRpcMcpRequestHandler,
         workspace_root=workspace_dir,
         rpc_path="/mcp",
+        tool_group="files",
     )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    excel_server = JsonRpcMcpHttpServer(
+        ("127.0.0.1", 0),
+        JsonRpcMcpRequestHandler,
+        workspace_root=workspace_dir,
+        rpc_path="/mcp",
+        tool_group="excel",
+    )
+    files_thread = threading.Thread(target=files_server.serve_forever, daemon=True)
+    excel_thread = threading.Thread(target=excel_server.serve_forever, daemon=True)
+    files_thread.start()
+    excel_thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}/mcp"
+        yield (
+            f"http://127.0.0.1:{files_server.server_port}/mcp",
+            f"http://127.0.0.1:{excel_server.server_port}/mcp",
+        )
     finally:
-        server.shutdown()
-        thread.join(timeout=5)
-        server.server_close()
+        files_server.shutdown()
+        excel_server.shutdown()
+        files_thread.join(timeout=5)
+        excel_thread.join(timeout=5)
+        files_server.server_close()
+        excel_server.server_close()
 
 
 @pytest.fixture()
-def control_plane_base_url(workspace_dir: Path, mcp_endpoint: str) -> Iterator[str]:
+def control_plane_base_url(workspace_dir: Path, mcp_endpoints: tuple[str, str]) -> Iterator[str]:
     runtime = build_runtime(
         RuntimeConfig(
             workspace=workspace_dir,
@@ -56,7 +72,7 @@ def control_plane_base_url(workspace_dir: Path, mcp_endpoint: str) -> Iterator[s
             snapshots_dir=workspace_dir / ".orchestra_snapshots",
             state_root=workspace_dir / ".orchestra_state" / "runs",
             audit_root=workspace_dir / ".orchestra_state" / "audit",
-            mcp_endpoint=mcp_endpoint,
+            mcp_endpoints=mcp_endpoints,
         )
     )
     server = ControlPlaneServer(
@@ -76,7 +92,10 @@ def control_plane_base_url(workspace_dir: Path, mcp_endpoint: str) -> Iterator[s
         runtime.close()
 
 
-def test_cli_runs_against_real_http_excel_mcp(workspace_dir: Path, mcp_endpoint: str) -> None:
+def test_cli_runs_against_split_real_http_mcp(
+    workspace_dir: Path,
+    mcp_endpoints: tuple[str, str],
+) -> None:
     _create_sales_workbook(workspace_dir / "sales.xlsx")
 
     exit_code = run_cli(
@@ -85,7 +104,9 @@ def test_cli_runs_against_real_http_excel_mcp(workspace_dir: Path, mcp_endpoint:
             "--workspace",
             str(workspace_dir),
             "--mcp-endpoint",
-            mcp_endpoint,
+            mcp_endpoints[0],
+            "--mcp-endpoint",
+            mcp_endpoints[1],
             "--run-id",
             "run-real-http",
             "--no-print-plan",
@@ -120,6 +141,10 @@ def test_control_plane_api_executes_real_http_excel_flow(
     _create_sales_workbook(workspace_dir / "sales.xlsx")
 
     with httpx.Client(base_url=control_plane_base_url, timeout=30.0) as client:
+        tools_response = client.get("/tools")
+        assert tools_response.status_code == 200
+        assert any(tool["name"] == "excel.save_file" for tool in tools_response.json()["tools"])
+
         created = client.post(
             "/workflows",
             json={

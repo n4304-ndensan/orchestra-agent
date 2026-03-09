@@ -16,10 +16,12 @@ def test_workflow_with_feedback_increments_version() -> None:
         name="Excel Summary",
         version=1,
         objective="Summarize sales column C",
+        reference_files=["docs/spec.pdf"],
     )
     updated = workflow.with_feedback("Need a summary sheet")
 
     assert updated.version == 2
+    assert updated.reference_files == ["docs/spec.pdf"]
     assert updated.feedback_history == ["Need a summary sheet"]
 
 

@@ -9,6 +9,7 @@ class Workflow:
     name: str
     version: int
     objective: str
+    reference_files: list[str] = field(default_factory=list)
     constraints: list[str] = field(default_factory=list)
     success_criteria: list[str] = field(default_factory=list)
     feedback_history: list[str] = field(default_factory=list)
@@ -20,6 +21,7 @@ class Workflow:
             name=self.name,
             version=self.version + 1,
             objective=self.objective,
+            reference_files=[*self.reference_files],
             constraints=[*self.constraints],
             success_criteria=[*self.success_criteria],
             feedback_history=new_history,

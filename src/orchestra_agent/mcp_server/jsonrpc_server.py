@@ -5,12 +5,13 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from orchestra_agent.mcp_server.excel_service import ExcelWorkspaceService
 from orchestra_agent.mcp_server.file_service import WorkspaceFileService
 
 type ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
+type ToolGroup = Literal["all", "files", "excel"]
 
 
 class JsonRpcError(RuntimeError):
@@ -66,10 +67,12 @@ class JsonRpcMcpHttpServer(ThreadingHTTPServer):
         *,
         workspace_root: Path,
         rpc_path: str,
+        tool_group: ToolGroup = "all",
     ) -> None:
         self.workspace_root = workspace_root
         self.rpc_path = rpc_path
-        self.registry = build_tool_registry(workspace_root)
+        self.tool_group = tool_group
+        self.registry = build_tool_registry(workspace_root, tool_group=tool_group)
         super().__init__(server_address, request_handler_class)
 
 
@@ -84,6 +87,7 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "workspace_root": str(self.server.workspace_root),
                     "rpc_path": self.server.rpc_path,
+                    "tool_group": self.server.tool_group,
                 },
             )
             return
@@ -181,7 +185,7 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
 
-def build_tool_registry(workspace_root: Path) -> ToolRegistry:
+def build_tool_registry(workspace_root: Path, tool_group: ToolGroup = "all") -> ToolRegistry:
     file_service = WorkspaceFileService(workspace_root)
     excel_service = ExcelWorkspaceService(workspace_root)
     registry = ToolRegistry()
@@ -191,88 +195,91 @@ def build_tool_registry(workspace_root: Path) -> ToolRegistry:
         "Health check for the MCP server.",
         lambda _: {"status": "ok"},
     )
-    registry.register(
-        "fs_list_entries",
-        "List files and directories under the workspace root.",
-        lambda args: {
-            "workspace_root": str(file_service.workspace_root),
-            "entries": file_service.list_entries(str(args.get("path", "."))),
-        },
-    )
-    registry.register(
-        "fs_read_text",
-        "Read a text file from the workspace.",
-        lambda args: {
-            "path": str(args["path"]),
-            "content": file_service.read_text(
-                str(args["path"]),
-                encoding=str(args.get("encoding", "utf-8")),
+    if tool_group in ("all", "files"):
+        registry.register(
+            "fs_list_entries",
+            "List files and directories under the workspace root.",
+            lambda args: {
+                "workspace_root": str(file_service.workspace_root),
+                "entries": file_service.list_entries(str(args.get("path", "."))),
+            },
+        )
+        registry.register(
+            "fs_read_text",
+            "Read a text file from the workspace.",
+            lambda args: {
+                "path": str(args["path"]),
+                "content": file_service.read_text(
+                    str(args["path"]),
+                    encoding=str(args.get("encoding", "utf-8")),
+                ),
+            },
+        )
+        registry.register(
+            "fs_write_text",
+            "Write a text file under the workspace.",
+            lambda args: {
+                "written": file_service.write_text(
+                    str(args["path"]),
+                    str(args["content"]),
+                    overwrite=bool(args.get("overwrite", False)),
+                    encoding=str(args.get("encoding", "utf-8")),
+                )
+            },
+        )
+
+    if tool_group in ("all", "excel"):
+        registry.register(
+            "excel.open_file",
+            "Open an Excel workbook and return its sheet metadata.",
+            lambda args: excel_service.open_file(str(args["file"])),
+        )
+        registry.register(
+            "excel.read_sheet",
+            "Read worksheet rows as dictionaries keyed by Excel column letters.",
+            lambda args: excel_service.read_sheet(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
             ),
-        },
-    )
-    registry.register(
-        "fs_write_text",
-        "Write a text file under the workspace.",
-        lambda args: {
-            "written": file_service.write_text(
-                str(args["path"]),
-                str(args["content"]),
+        )
+        registry.register(
+            "excel.calculate_sum",
+            "Calculate a numeric sum for a worksheet column.",
+            lambda args: excel_service.calculate_sum(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
+                column=str(args["column"]),
+                start_row=int(args["start_row"]) if "start_row" in args else None,
+                end_row=int(args["end_row"]) if "end_row" in args else None,
+            ),
+        )
+        registry.register(
+            "excel.create_sheet",
+            "Create a worksheet inside an existing workbook.",
+            lambda args: excel_service.create_sheet(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
                 overwrite=bool(args.get("overwrite", False)),
-                encoding=str(args.get("encoding", "utf-8")),
-            )
-        },
-    )
-    registry.register(
-        "excel.open_file",
-        "Open an Excel workbook and return its sheet metadata.",
-        lambda args: excel_service.open_file(str(args["file"])),
-    )
-    registry.register(
-        "excel.read_sheet",
-        "Read worksheet rows as dictionaries keyed by Excel column letters.",
-        lambda args: excel_service.read_sheet(
-            path=str(args["file"]),
-            sheet=str(args["sheet"]),
-        ),
-    )
-    registry.register(
-        "excel.calculate_sum",
-        "Calculate a numeric sum for a worksheet column.",
-        lambda args: excel_service.calculate_sum(
-            path=str(args["file"]),
-            sheet=str(args["sheet"]),
-            column=str(args["column"]),
-            start_row=int(args["start_row"]) if "start_row" in args else None,
-            end_row=int(args["end_row"]) if "end_row" in args else None,
-        ),
-    )
-    registry.register(
-        "excel.create_sheet",
-        "Create a worksheet inside an existing workbook.",
-        lambda args: excel_service.create_sheet(
-            path=str(args["file"]),
-            sheet=str(args["sheet"]),
-            overwrite=bool(args.get("overwrite", False)),
-        ),
-    )
-    registry.register(
-        "excel.write_cells",
-        "Write cell values into a worksheet.",
-        lambda args: excel_service.write_cells(
-            path=str(args["file"]),
-            sheet=str(args["sheet"]),
-            cells=_require_cells(args.get("cells")),
-        ),
-    )
-    registry.register(
-        "excel.save_file",
-        "Save or export a workbook into an output path.",
-        lambda args: excel_service.save_file(
-            path=str(args["file"]),
-            output=str(args["output"]),
-            overwrite=bool(args.get("overwrite", True)),
-        ),
-    )
+            ),
+        )
+        registry.register(
+            "excel.write_cells",
+            "Write cell values into a worksheet.",
+            lambda args: excel_service.write_cells(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
+                cells=_require_cells(args.get("cells")),
+            ),
+        )
+        registry.register(
+            "excel.save_file",
+            "Save or export a workbook into an output path.",
+            lambda args: excel_service.save_file(
+                path=str(args["file"]),
+                output=str(args["output"]),
+                overwrite=bool(args.get("overwrite", True)),
+            ),
+        )
     return registry
 
 
@@ -281,6 +288,7 @@ def run_jsonrpc_mcp_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     rpc_path: str = "/mcp",
+    tool_group: ToolGroup = "all",
 ) -> None:
     normalized_path = rpc_path if rpc_path.startswith("/") else f"/{rpc_path}"
     workspace = Path(workspace_root).resolve()
@@ -289,6 +297,7 @@ def run_jsonrpc_mcp_server(
         JsonRpcMcpRequestHandler,
         workspace_root=workspace,
         rpc_path=normalized_path,
+        tool_group=tool_group,
     )
     try:
         server.serve_forever()

@@ -1,6 +1,6 @@
 from .agent_state_store import IAgentStateStore
 from .audit_logger import IAuditLogger
-from .llm_client import ILlmClient, LlmGenerateRequest, LlmMessage
+from .llm_client import ILlmClient, LlmAttachment, LlmGenerateRequest, LlmMessage
 from .mcp_client import IMcpClient
 from .planner import IPlanner
 from .policy_engine import IPolicyEngine, PolicyEvaluationResult
@@ -20,6 +20,7 @@ __all__ = [
     "IStepExecutor",
     "IStepPlanRepository",
     "IWorkflowRepository",
+    "LlmAttachment",
     "LlmGenerateRequest",
     "LlmMessage",
     "PolicyEvaluationResult",

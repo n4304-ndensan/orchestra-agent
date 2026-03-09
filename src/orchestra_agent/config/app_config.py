@@ -10,6 +10,8 @@ from typing import Any, Literal, cast
 from orchestra_agent.runtime import LlmProviderName, PlannerMode
 
 CONFIG_ENV_VAR = "ORCHESTRA_CONFIG"
+type McpTransport = Literal["http", "stdio"]
+type McpToolGroup = Literal["all", "files", "excel"]
 
 
 @dataclass(slots=True)
@@ -23,13 +25,49 @@ class WorkspaceSettings:
 
 
 @dataclass(slots=True)
-class McpSettings:
+class McpServerSettings:
     name: str = "orchestra-workspace"
-    transport: Literal["http", "stdio"] = "http"
+    transport: McpTransport = "http"
     host: str = "127.0.0.1"
     port: int = 8000
     path: str = "/mcp"
     endpoint: str | None = None
+    tool_group: McpToolGroup = "all"
+
+
+@dataclass(slots=True)
+class McpSettings(McpServerSettings):
+    servers: tuple[McpServerSettings, ...] = ()
+
+    def runtime_endpoints(self) -> tuple[str, ...]:
+        if self.servers:
+            endpoints = tuple(
+                server.endpoint.strip()
+                for server in self.servers
+                if server.endpoint is not None and server.endpoint.strip()
+            )
+            if endpoints:
+                return endpoints
+        if self.endpoint is None or not self.endpoint.strip():
+            return ()
+        return (self.endpoint.strip(),)
+
+    def resolve_server(self, name: str | None) -> McpServerSettings:
+        if name is None:
+            return McpServerSettings(
+                name=self.name,
+                transport=self.transport,
+                host=self.host,
+                port=self.port,
+                path=self.path,
+                endpoint=self.endpoint,
+                tool_group=self.tool_group,
+            )
+
+        for server in self.servers:
+            if server.name == name:
+                return server
+        raise KeyError(f"MCP server profile '{name}' was not found in config.")
 
 
 @dataclass(slots=True)
@@ -57,7 +95,7 @@ class LlmSettings:
 
 @dataclass(slots=True)
 class RuntimeSettings:
-    workflow_name: str = "Excel Automation Workflow"
+    workflow_name: str = "Automation Workflow"
     run_id: str = "run-cli"
     auto_approve: bool = True
     max_resume: int = 50
@@ -105,6 +143,8 @@ class AppConfig:
                 port=_as_int(mcp_payload.get("port"), 8000),
                 path=_as_str(mcp_payload.get("path"), "/mcp"),
                 endpoint=_as_optional_str(mcp_payload.get("endpoint")),
+                tool_group=_as_tool_group(mcp_payload.get("tool_group"), "all"),
+                servers=tuple(_as_mcp_server_settings(mcp_payload.get("servers"))),
             ),
             api=ApiSettings(
                 host=_as_str(api_payload.get("host"), "127.0.0.1"),
@@ -140,7 +180,7 @@ class AppConfig:
             runtime=RuntimeSettings(
                 workflow_name=_as_str(
                     runtime_payload.get("workflow_name"),
-                    "Excel Automation Workflow",
+                    "Automation Workflow",
                 ),
                 run_id=_as_str(runtime_payload.get("run_id"), "run-cli"),
                 auto_approve=_as_bool(runtime_payload.get("auto_approve"), True),
@@ -244,12 +284,43 @@ def _as_float(value: Any, default: float) -> float:
     return float(value)
 
 
-def _as_transport(value: Any, default: Literal["http", "stdio"]) -> Literal["http", "stdio"]:
+def _as_transport(value: Any, default: McpTransport) -> McpTransport:
     if value is None:
         return default
     if value not in ("http", "stdio"):
         raise ValueError("mcp.transport must be 'http' or 'stdio'.")
-    return cast(Literal["http", "stdio"], value)
+    return cast(McpTransport, value)
+
+
+def _as_tool_group(value: Any, default: McpToolGroup) -> McpToolGroup:
+    if value is None:
+        return default
+    if value not in ("all", "files", "excel"):
+        raise ValueError("mcp.tool_group must be 'all', 'files', or 'excel'.")
+    return cast(McpToolGroup, value)
+
+
+def _as_mcp_server_settings(value: Any) -> list[McpServerSettings]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("mcp.servers must be an array of TOML tables.")
+
+    servers: list[McpServerSettings] = []
+    for item in value:
+        payload = _as_dict(item)
+        servers.append(
+            McpServerSettings(
+                name=_as_str(payload.get("name"), "orchestra-workspace"),
+                transport=_as_transport(payload.get("transport"), "http"),
+                host=_as_str(payload.get("host"), "127.0.0.1"),
+                port=_as_int(payload.get("port"), 8000),
+                path=_as_str(payload.get("path"), "/mcp"),
+                endpoint=_as_optional_str(payload.get("endpoint")),
+                tool_group=_as_tool_group(payload.get("tool_group"), "all"),
+            )
+        )
+    return servers
 
 
 def _as_llm_provider(value: Any, default: LlmProviderName) -> LlmProviderName:

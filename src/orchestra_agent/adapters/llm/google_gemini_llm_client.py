@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 import httpx
 
-from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest, LlmMessage
+from orchestra_agent.ports.llm_client import (
+    ILlmClient,
+    LlmAttachment,
+    LlmGenerateRequest,
+    LlmMessage,
+)
 
 
 class GoogleGeminiLlmClient(ILlmClient):
@@ -78,13 +86,18 @@ class GoogleGeminiLlmClient(ILlmClient):
 
         for message in messages:
             if message.role == "system":
+                if message.attachments:
+                    raise ValueError(
+                        "Google Gemini system messages do not support file attachments "
+                        "in this client."
+                    )
                 system_parts.append(message.content)
                 continue
 
             contents.append(
                 {
                     "role": GoogleGeminiLlmClient._to_google_role(message.role),
-                    "parts": [{"text": message.content}],
+                    "parts": GoogleGeminiLlmClient._build_parts(message),
                 }
             )
 
@@ -96,6 +109,30 @@ class GoogleGeminiLlmClient(ILlmClient):
         if role == "assistant":
             return "model"
         return "user"
+
+    @staticmethod
+    def _build_parts(message: LlmMessage) -> list[dict[str, Any]]:
+        parts: list[dict[str, Any]] = []
+        if message.content:
+            parts.append({"text": message.content})
+        for attachment in message.attachments:
+            parts.append(GoogleGeminiLlmClient._build_attachment_part(attachment))
+        return parts
+
+    @staticmethod
+    def _build_attachment_part(attachment: LlmAttachment) -> dict[str, Any]:
+        file_path = Path(attachment.path).resolve()
+        if not file_path.is_file():
+            raise FileNotFoundError(f"LLM attachment '{file_path}' was not found.")
+        mime_type = attachment.mime_type or mimetypes.guess_type(file_path.name)[0]
+        normalized_mime_type = mime_type or "application/octet-stream"
+        encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+        return {
+            "inlineData": {
+                "mimeType": normalized_mime_type,
+                "data": encoded,
+            }
+        }
 
     @staticmethod
     def _extract_text(body: Any) -> str:

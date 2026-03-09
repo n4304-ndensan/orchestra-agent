@@ -44,6 +44,7 @@ class PlanExecutor:
         audit_logger: IAuditLogger,
         failure_handler: FailureHandler,
         step_executor: IStepExecutor | None = None,
+        default_snapshot_scope: BackupScope = BackupScope.WORKSPACE,
     ) -> None:
         self._mcp_client = mcp_client
         self._state_store = state_store
@@ -51,6 +52,7 @@ class PlanExecutor:
         self._audit_logger = audit_logger
         self._failure_handler = failure_handler
         self._step_executor = step_executor
+        self._default_snapshot_scope = default_snapshot_scope
 
     def execute(self, workflow: Workflow, step_plan: StepPlan, state: AgentState) -> AgentState:
         active_workflow = workflow
@@ -157,14 +159,24 @@ class PlanExecutor:
             if not self._ensure_pre_step_approval(workflow, step_plan, step, state):
                 return "paused", None
 
-            snapshot_ref = self._create_snapshot_if_needed(step, step_plan)
+            resolved_input = self._resolve_step_input(step.resolved_input, step_results)
+            snapshot_ref = self._create_pre_step_snapshot(step, step_plan, resolved_input)
             record = ExecutionRecord.pending(step.step_id)
             record.metadata["step_plan_version"] = step_plan.version
             record.snapshot_ref = snapshot_ref
             record.mark_running()
+            self._audit_logger.record(
+                {
+                    "event_type": "step_started",
+                    "run_id": state.run_id,
+                    "step_plan_id": step_plan.step_plan_id,
+                    "step_id": step.step_id,
+                    "tool_ref": step.tool_ref,
+                    "snapshot_ref": snapshot_ref,
+                }
+            )
 
             try:
-                resolved_input = self._resolve_step_input(step.resolved_input, step_results)
                 result = self._execute_step(
                     workflow=workflow,
                     step=step,
@@ -492,9 +504,7 @@ class PlanExecutor:
         resolved_input: dict[str, Any],
         step_results: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
-        if step.tool_ref == "orchestra.llm_execute":
-            if self._step_executor is None:
-                raise RuntimeError("LLM step executor is not configured.")
+        if self._step_executor is not None:
             return self._step_executor.execute(
                 workflow=workflow,
                 step=step,
@@ -526,19 +536,27 @@ class PlanExecutor:
             return record.status in (ExecutionStatus.SUCCESS, ExecutionStatus.SKIPPED)
         return False
 
-    def _create_snapshot_if_needed(self, step: Step, step_plan: StepPlan) -> str | None:
-        if step.backup_scope == BackupScope.NONE:
+    def _create_pre_step_snapshot(
+        self,
+        step: Step,
+        step_plan: StepPlan,
+        resolved_input: dict[str, Any],
+    ) -> str | None:
+        snapshot_scope = step.backup_scope
+        if snapshot_scope == BackupScope.NONE:
+            snapshot_scope = self._default_snapshot_scope
+        if snapshot_scope == BackupScope.NONE:
             return None
-
         metadata = {
             "step_plan_id": step_plan.step_plan_id,
             "step_id": step.step_id,
             "tool_ref": step.tool_ref,
+            "snapshot_phase": "pre_step",
         }
-        file_path = step.resolved_input.get("file")
+        file_path = resolved_input.get("file")
         if isinstance(file_path, str):
             metadata["file"] = file_path
-        return self._snapshot_manager.create_snapshot(scope=step.backup_scope, metadata=metadata)
+        return self._snapshot_manager.create_snapshot(scope=snapshot_scope, metadata=metadata)
 
     def _resolve_step_input(
         self,

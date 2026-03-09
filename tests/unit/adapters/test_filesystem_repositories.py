@@ -18,6 +18,7 @@ def test_xml_workflow_repository_save_and_load() -> None:
             name="Excel summary",
             version=1,
             objective="sales.xlsxのC列を集計してsummary.xlsxへ",
+            reference_files=["refs/requirements.pdf", "refs/schema.csv"],
             constraints=["Do not modify source values"],
             success_criteria=["summary.xlsx is generated"],
         )
@@ -26,6 +27,7 @@ def test_xml_workflow_repository_save_and_load() -> None:
         loaded = repo.get("wf-xml")
         assert loaded is not None
         assert loaded.objective == workflow.objective
+        assert loaded.reference_files == ["refs/requirements.pdf", "refs/schema.csv"]
         assert (base / "workflow" / "wf-xml" / "workflow.xml").is_file()
 
         updated = workflow.with_feedback("write_summary failed once")

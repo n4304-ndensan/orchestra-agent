@@ -8,9 +8,17 @@ LlmResponseFormat = Literal["text", "json_object"]
 
 
 @dataclass(slots=True, frozen=True)
+class LlmAttachment:
+    path: str
+    name: str | None = None
+    mime_type: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
 class LlmMessage:
     role: LlmRole
     content: str
+    attachments: tuple[LlmAttachment, ...] = ()
 
 
 @dataclass(slots=True, frozen=True)

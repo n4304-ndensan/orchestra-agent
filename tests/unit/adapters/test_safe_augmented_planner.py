@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from orchestra_agent.adapters.planner import (
     LlmPlanner,
@@ -89,22 +92,31 @@ def test_safe_augmented_planner_rejects_unsafe_tool_ref() -> None:
 
 
 def test_llm_step_proposal_provider_parses_response() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    reference_file = base / "notes.txt"
+    reference_file.write_text("column D is preferred", encoding="utf-8")
     workflow = Workflow(
         workflow_id="wf-1",
         name="Excel summary",
         version=1,
         objective="sales.xlsxのC列を集計してsummary.xlsxへ",
+        reference_files=[str(reference_file)],
     )
-    draft_plan = LlmPlanner().compile_step_plan(workflow)
-    client = FakeLlmClient(
-        response_text='{"steps":[{"step_id":"calculate_totals","resolved_input":{"column":"D"}}]}'
-    )
-    provider = LlmStepProposalProvider(client, temperature=0.2, max_tokens=500)
+    try:
+        draft_plan = LlmPlanner().compile_step_plan(workflow)
+        client = FakeLlmClient(
+            response_text='{"steps":[{"step_id":"calculate_totals","resolved_input":{"column":"D"}}]}'
+        )
+        provider = LlmStepProposalProvider(client, temperature=0.2, max_tokens=500)
 
-    proposal = provider.propose(workflow, draft_plan)
+        proposal = provider.propose(workflow, draft_plan)
 
-    assert proposal is not None
-    assert proposal["steps"][0]["step_id"] == "calculate_totals"
-    assert client.last_request is not None
-    assert client.last_request.response_format == "json_object"
-    assert client.last_request.temperature == 0.2
+        assert proposal is not None
+        assert proposal["steps"][0]["step_id"] == "calculate_totals"
+        assert client.last_request is not None
+        assert client.last_request.response_format == "json_object"
+        assert client.last_request.temperature == 0.2
+        assert client.last_request.messages[1].attachments[0].path == str(reference_file)
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

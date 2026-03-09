@@ -13,8 +13,9 @@ from orchestra_agent.adapters.planner import LlmPlanner
 from orchestra_agent.adapters.policy import DefaultPolicyEngine
 from orchestra_agent.adapters.snapshot import FilesystemSnapshotManager
 from orchestra_agent.application.use_cases import ExecutePlanUseCase
-from orchestra_agent.domain import AgentState, ApprovalStatus, StepPlan, Workflow
+from orchestra_agent.domain import AgentState, ApprovalStatus, Step, StepPlan, Workflow
 from orchestra_agent.executor import FailureHandler, PlanExecutor
+from orchestra_agent.ports import IMcpClient, IStepExecutor
 
 
 class FakeExcelMcpClient:
@@ -51,6 +52,24 @@ class FakeExcelMcpClient:
             output.write_text("summary", encoding="utf-8")
             return {"output": str(output)}
         raise KeyError(f"Unsupported fake tool '{tool_ref}'")
+
+
+class RecordingAgenticExecutor(IStepExecutor):
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(
+        self,
+        workflow: Workflow,
+        step: Step,
+        resolved_input: dict[str, Any],
+        step_results: dict[str, dict[str, Any]],
+        mcp_client: IMcpClient,
+    ) -> dict[str, Any]:
+        self.calls.append((step.step_id, dict(resolved_input)))
+        if step.step_id == "calculate_totals":
+            return {"step_id": step.step_id, "status": "agentic", "total": 60}
+        return {"step_id": step.step_id, "status": "agentic"}
 
 
 def _rewrite_plan_file_paths(plan_file: Path, output_file: Path, plan: StepPlan) -> None:
@@ -153,7 +172,8 @@ def test_plan_executor_runs_full_excel_flow() -> None:
 
         statuses = [record.status.value for record in state.execution_history]
         assert statuses == ["SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"]
-        assert len(state.snapshot_refs) == 3
+        assert len(state.snapshot_refs) == 6
+        assert all(record.snapshot_ref is not None for record in state.execution_history)
         assert (base / "summary.xlsx").is_file()
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -251,5 +271,55 @@ def test_plan_executor_replans_after_failure() -> None:
         assert state.workflow_version == 2
         assert state.approval_status == ApprovalStatus.PENDING
         assert state.last_error is not None
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_plan_executor_routes_standard_steps_through_agentic_executor() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        execute_use_case, workflow, plan = _build_use_case(base, FakeExcelMcpClient())
+        agentic_executor = RecordingAgenticExecutor()
+        state_store = PostgresAgentStateStore()
+        step_plan_repo = InMemoryStepPlanRepository()
+        workflow_repo = InMemoryWorkflowRepository()
+        audit_logger = InMemoryAuditLogger()
+        snapshot_manager = FilesystemSnapshotManager(
+            base / "snapshots-agentic",
+            workspace_root=base,
+        )
+        workflow_repo.save(workflow)
+        step_plan_repo.save(plan)
+        failure_handler = FailureHandler(
+            snapshot_manager=snapshot_manager,
+            planner=LlmPlanner(),
+            policy_engine=DefaultPolicyEngine(),
+            step_plan_repository=step_plan_repo,
+            audit_logger=audit_logger,
+            workflow_repository=workflow_repo,
+            max_replans=1,
+        )
+        executor = PlanExecutor(
+            mcp_client=FakeExcelMcpClient(),
+            state_store=state_store,
+            snapshot_manager=snapshot_manager,
+            audit_logger=audit_logger,
+            failure_handler=failure_handler,
+            step_executor=agentic_executor,
+        )
+        use_case = ExecutePlanUseCase(executor, state_store, audit_logger)
+
+        state = _auto_approve_until_done(
+            execute_use_case=use_case,
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-agentic",
+        )
+
+        assert state.approval_status == ApprovalStatus.APPROVED
+        assert len(agentic_executor.calls) == 6
+        assert agentic_executor.calls[0][0] == "open_file"
+        assert state.execution_history[0].result == {"step_id": "open_file", "status": "agentic"}
     finally:
         shutil.rmtree(base, ignore_errors=True)

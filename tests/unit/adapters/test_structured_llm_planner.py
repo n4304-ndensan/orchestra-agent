@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+from uuid import uuid4
+
 from orchestra_agent.adapters.planner import LlmPlanner, StructuredLlmPlanner
 from orchestra_agent.domain import Workflow
 from orchestra_agent.ports import LlmGenerateRequest
@@ -18,11 +22,16 @@ class FakeLlmClient:
 
 
 def test_structured_llm_planner_builds_full_step_plan() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    reference_file = base / "requirements.txt"
+    reference_file.write_text("Use the attached workbook notes.", encoding="utf-8")
     workflow = Workflow(
         workflow_id="wf-1",
         name="Workspace summary",
         version=1,
         objective="Read sales.xlsx and write a local report file.",
+        reference_files=[str(reference_file)],
     )
     client = FakeLlmClient(
         [
@@ -66,17 +75,32 @@ def test_structured_llm_planner_builds_full_step_plan() -> None:
             """
         ]
     )
-    planner = StructuredLlmPlanner(
-        llm_client=client,
-        available_tools_supplier=lambda: ["excel.read_sheet", "excel.save_file"],
-    )
+    try:
+        planner = StructuredLlmPlanner(
+            llm_client=client,
+            available_tools_supplier=lambda: ["excel.read_sheet", "excel.save_file"],
+            available_tool_catalog_supplier=lambda: [
+                {
+                    "name": "excel.read_sheet",
+                    "description": "Read worksheet rows.",
+                },
+                {
+                    "name": "excel.save_file",
+                    "description": "Save workbook output.",
+                },
+            ],
+        )
 
-    plan = planner.compile_step_plan(workflow)
+        plan = planner.compile_step_plan(workflow)
 
-    assert [step.step_id for step in plan.steps] == ["prepare_report", "export_file"]
-    assert plan.steps[0].tool_ref == "orchestra.llm_execute"
-    assert plan.steps[0].backup_scope.value == "WORKSPACE"
-    assert plan.steps[1].depends_on == ["prepare_report"]
+        assert [step.step_id for step in plan.steps] == ["prepare_report", "export_file"]
+        assert plan.steps[0].tool_ref == "orchestra.llm_execute"
+        assert plan.steps[0].backup_scope.value == "WORKSPACE"
+        assert plan.steps[1].depends_on == ["prepare_report"]
+        assert client.requests[0].messages[1].attachments[0].path == str(reference_file)
+        assert '"description": "Read worksheet rows."' in client.requests[0].messages[1].content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_structured_llm_planner_falls_back_when_response_is_invalid() -> None:

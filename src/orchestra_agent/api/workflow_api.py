@@ -21,6 +21,7 @@ class WorkflowAPI:
         self,
         name: str,
         objective: str,
+        reference_files: list[str] | None = None,
         constraints: list[str] | None = None,
         success_criteria: list[str] | None = None,
         workflow_id: str | None = None,
@@ -28,6 +29,7 @@ class WorkflowAPI:
         workflow = self._create_workflow_use_case.execute(
             name=name,
             objective=objective,
+            reference_files=reference_files,
             constraints=constraints,
             success_criteria=success_criteria,
             workflow_id=workflow_id,
@@ -37,6 +39,7 @@ class WorkflowAPI:
             "name": workflow.name,
             "version": workflow.version,
             "objective": workflow.objective,
+            "reference_files": workflow.reference_files,
             "constraints": workflow.constraints,
             "success_criteria": workflow.success_criteria,
             "feedback_history": workflow.feedback_history,

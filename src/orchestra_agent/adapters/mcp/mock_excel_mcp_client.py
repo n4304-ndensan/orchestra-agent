@@ -17,13 +17,34 @@ class MockExcelMcpClient(IMcpClient):
         self._last_total = 0
 
     def list_tools(self) -> list[str]:
+        return [tool["name"] for tool in self.describe_tools()]
+
+    def describe_tools(self) -> list[dict[str, str]]:
         return [
-            "excel.open_file",
-            "excel.read_sheet",
-            "excel.calculate_sum",
-            "excel.create_sheet",
-            "excel.write_cells",
-            "excel.save_file",
+            {
+                "name": "excel.open_file",
+                "description": "Open an Excel workbook and inspect its sheets.",
+            },
+            {
+                "name": "excel.read_sheet",
+                "description": "Read worksheet rows as dictionaries keyed by column letters.",
+            },
+            {
+                "name": "excel.calculate_sum",
+                "description": "Calculate a numeric sum for a worksheet column range.",
+            },
+            {
+                "name": "excel.create_sheet",
+                "description": "Create a worksheet inside a workbook.",
+            },
+            {
+                "name": "excel.write_cells",
+                "description": "Write values into worksheet cells.",
+            },
+            {
+                "name": "excel.save_file",
+                "description": "Save or export a workbook to an output path.",
+            },
         ]
 
     def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:

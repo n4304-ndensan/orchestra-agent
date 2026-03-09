@@ -1,124 +1,135 @@
 # orchestra-agent Current Status
 
-この資料は、`orchestra-agent` の現状実装を「作業フロー」と「できること/運用上の前提」で整理したものです。
+このアプリは、Excel 専用ツールではなく、AI と MCP を使って「なんでも手順化し、安全に自動実行する」ための orchestration product です。Excel 自動化はその中の 1 つの同梱 capability です。
 
-## 1. End-to-End 作業フロー
+完全な AI 制御モードは `llm.provider = openai` または `google` のときに有効になります。`none` は決定論ベースの安全プロファイルです。
+
+## 1. いまのプロダクト定義
+
+- 目的:
+  - 自然言語の objective から workflow を作る
+  - 実行前に step plan を生成し、承認・監査・復旧を伴って実行する
+  - AI が plan と各 step の実行制御を担当し、MCP runtime が実作業を実行する
+- 現在の同梱 MCP role:
+  - `files`: workspace の一覧、読込、書込
+  - `excel`: `.xlsx` の読込、集計、sheet 作成、保存
+- 拡張方向:
+  - runtime は複数 MCP endpoint を束ねられるので、将来的に browser / database / SaaS / shell などの role を横に足していける
+
+## 2. AI と MCP の責務分離
+
+「すべて AI 経由で実行されるか?」に対する答えは、半分 yes、半分 no です。
+
+- AI がやること:
+  - workflow objective の理解
+  - available tool catalog を見た step plan 生成
+  - feedback を受けた再計画
+  - 各 step の解釈
+  - 実行中に必要な MCP tool 選択
+  - 実行中に必要なファイル添付の要求
+- MCP がやること:
+  - 実ファイル操作
+  - Excel 読み書き
+  - そのほか role ごとの deterministic tool execution
+- core runtime がやること:
+  - approval gate
+  - snapshot / restore
+  - audit log
+  - run state 永続化
+  - failure handling
+
+つまり、AI が「何をどう進めるか」を step 単位でも決め、MCP runtime がその決定を実際の tool execution に落とします。
+
+## 3. 現在の実行フロー
 
 ```mermaid
 flowchart TD
-    U[User Objective<br/>例: sales.xlsxのC列を集計してsummary.xlsxへ]
-    CLI[CLI main.py / orchestra_agent.cli]
-    CW[CreateWorkflowUseCase]
-    CP[CompileStepPlanUseCase]
-    BP[Base Planner<br/>LlmPlanner deterministic]
-    LP{LLM Proposal Source}
-    PF[JsonFileStepProposalProvider]
-    PO[LlmStepProposalProvider<br/>OpenAI via ILlmClient]
-    SP[SafeAugmentedLlmPlanner<br/>安全検証付きパッチ適用]
-    PE[DefaultPolicyEngine]
-    AP[ApproveStepPlanUseCase]
+    U[User Objective]
+    WF[Workflow creation]
+    PL[Planner]
+    AP[Approval / Policy]
     EX[PlanExecutor]
-    MCP[MCP Client<br/>Mock or JSON-RPC]
-    SS[SnapshotManager]
-    FH[FailureHandler]
-    RS[Run State / Audit]
-    OUT[Result]
+    AI[LLM planning or llm_execute]
+    MCPF[Files MCP]
+    MCPE[Excel MCP]
+    AUDIT[Run State / Audit / Snapshot]
 
-    U --> CLI --> CW --> CP --> BP --> SP --> PE --> AP --> EX
-    LP --> PF --> SP
-    LP --> PO --> SP
-    EX --> MCP
-    EX --> SS
-    EX --> RS
-    EX --> OUT
-    EX -->|on failure| FH --> SS
-    FH --> CP
-    FH --> RS
+    U --> WF --> PL --> AP --> EX
+    PL --> AI
+    EX --> MCPF
+    EX --> MCPE
+    EX --> AUDIT
+    EX -->|failure| PL
 ```
 
-## 2. 実行ステップフロー（1 Step）
+## 4. 実装済みの主要機能
 
-```mermaid
-flowchart TD
-    S0[Select next step in DAG order]
-    S1{skip/run flags}
-    S2{requires approval?}
-    S3{backup_scope != NONE?}
-    S4[Create snapshot]
-    S5[Resolve input templates<br/>{{step.result_key}}]
-    S6[Call MCP tool]
-    S7{success?}
-    S8[Record SUCCESS]
-    S9[Record FAILED]
-    S10[Restore snapshot]
-    S11[Feedback + Replan]
-    S12[Pause waiting approval]
-
-    S0 --> S1
-    S1 -->|skip| S8
-    S1 -->|run| S2
-    S2 -->|yes and not approved| S12
-    S2 -->|no| S3
-    S3 -->|yes| S4 --> S5
-    S3 -->|no| S5
-    S5 --> S6 --> S7
-    S7 -->|yes| S8
-    S7 -->|no| S9 --> S10 --> S11
-```
-
-## 3. 現状できること
-
-- 1コマンド実行（CLI）
-  - `uv run orchestra-agent "sales.xlsxのC列を集計してsummary.xlsxへ"`
-- 実 Excel `.xlsx` を扱う内蔵 HTTP JSON-RPC MCP サーバ
-  - `uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport http`
-- HTTP control plane API
-  - `POST /workflows`
-  - `POST /workflows/{workflow_id}/plans`
-  - `POST /runs`
-  - `POST /runs/{run_id}/approval`
-  - `GET /runs/{run_id}`
-- 単一 TOML config での設定管理
-  - `--config .\orchestra-agent.toml`
-  - API key だけは環境変数
+- config-first
+  - 1 つの `orchestra-agent.toml` で workspace / API / MCP / runtime を管理
+  - API key だけ環境変数
 - Docker Compose 起動
   - `docker compose up --build`
-- workflowをXMLとして保存/再利用
-  - `--workflow-id` で既存workflow指定
-  - `--workflow-xml` でXMLインポート実行
-- workflow単位でplanをファイル保存
-  - `plan/<workflow_id>/<step_plan_id>/...`
-- run state / audit の永続化
-  - `.orchestra_state/runs/<run_id>.json`
-  - `.orchestra_state/audit/events.ndjson`
-- Excel向け StepPlan の自動生成
-- DAG順実行、依存解決、テンプレート展開
-- 承認ゲート（自動承認/待機/再開）
-- Snapshot-before-mutation と失敗時復旧
-- 失敗時のフィードバック再計画（replan）
-- 監査ログ/実行履歴管理
-- LLM補完（安全制約付き）
-  - `--llm-provider file`（JSONパッチ）
-  - `--llm-provider openai`（OpenAIライブ提案）
+  - MCP を role ごとに分離
+  - `orchestra-mcp-files`
+  - `orchestra-mcp-excel`
+  - `orchestra-api`
+- runtime 側の multi-endpoint MCP 集約
+  - 複数 endpoint の `tools/list` を統合
+  - tool description も AI に渡す
+  - tool 名に応じて正しい MCP server へ routing
+- workflow / step plan / run state / audit 永続化
+  - `workflow/`
+  - `plan/`
+  - `.orchestra_state/runs/`
+  - `.orchestra_state/audit/`
+- human-in-the-loop
+  - step 前承認
+  - 実行後レビュー承認
+  - feedback による replan
+- safe execution
+  - 全 step 実行前 snapshot
+  - failure 時 restore
+  - 再計画上限
+- LLM attachment support
+  - message に複数ファイル添付可能
+  - `orchestra.llm_execute` 中に LLM が追加ファイルを要求可能
 
-## 4. LLM補完の安全設計
+## 5. planner の現状
 
-- ベースプランは常に決定論 (`LlmPlanner`)
-- LLMは「既存ステップへのパッチ提案」だけ担当
-- 許可外 `tool_ref` は拒否
-- パッチ適用後も `StepPlan` ドメイン検証（DAG/依存/型）を通す
-- 不正提案は自動で破棄し、ベースプランへフォールバック
+- `llm.provider = none`
+  - 決定論 planner を使う
+  - 現状この draft planner は Excel 寄り
+- `llm.provider = openai | google` かつ `planner_mode = full`
+  - LLM が available MCP tools を見て full plan を構築
+  - step 実行時も LLM が tool catalog を見て MCP runtime をオーケストレーション
+  - Excel 以外の role を増やしたときも、このモードが汎用 orchestration の中心になる
+- `planner_mode = augmented`
+  - 決定論 draft に対して安全な patch だけ許可
 
-## 5. 運用上の前提
+## 6. Docker / MCP 構成
 
-- Excel 実行には `openpyxl` を含む optional extra が必要
-  - `uv run --extra mcp-server ...`
-- Docker 実行には Docker daemon が起動している必要がある
-- 標準 planner は Excel 集計ユースケースに最適化された安全側のドラフトを生成する
-- 外部 MCP サーバを使う場合は `--mcp-endpoint` で JSON-RPC 互換 endpoint を指定する
+現在の compose 構成は role 分離です。
 
-## 6. 品質状態
+- `orchestra-mcp-files`
+  - `fs_list_entries`
+  - `fs_read_text`
+  - `fs_write_text`
+- `orchestra-mcp-excel`
+  - `excel.open_file`
+  - `excel.read_sheet`
+  - `excel.calculate_sum`
+  - `excel.create_sheet`
+  - `excel.write_cells`
+  - `excel.save_file`
+- `orchestra-api`
+  - 上記 MCP 群をまとめて 1 つの control plane として扱う
+
+この分割により、今後 role 単位で Docker service を追加しても orchestration core はそのまま使えます。
+
+新しい MCP server を足すときは、`orchestra-agent.toml` に `[[mcp.servers]]` を追加するだけで runtime に束ねられます。
+
+## 7. 品質状態
 
 - `ruff`: pass
 - `mypy`: pass
-- `pytest`: pass
+- `pytest`: split MCP 構成を含めて pass

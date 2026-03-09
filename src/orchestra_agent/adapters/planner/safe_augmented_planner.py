@@ -10,7 +10,12 @@ from orchestra_agent.domain.enums import BackupScope, RiskLevel
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
-from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest, LlmMessage
+from orchestra_agent.ports.llm_client import (
+    ILlmClient,
+    LlmAttachment,
+    LlmGenerateRequest,
+    LlmMessage,
+)
 from orchestra_agent.ports.planner import IPlanner
 
 
@@ -67,6 +72,7 @@ class LlmStepProposalProvider(IStepProposalProvider):
         draft_payload = {
             "workflow": {
                 "objective": workflow.objective,
+                "reference_files": workflow.reference_files,
                 "constraints": workflow.constraints,
                 "success_criteria": workflow.success_criteria,
                 "feedback_history": workflow.feedback_history,
@@ -96,7 +102,11 @@ class LlmStepProposalProvider(IStepProposalProvider):
         request = LlmGenerateRequest(
             messages=(
                 LlmMessage(role="system", content=system_prompt),
-                LlmMessage(role="user", content=user_prompt),
+                LlmMessage(
+                    role="user",
+                    content=user_prompt,
+                    attachments=self._workflow_attachments(workflow),
+                ),
             ),
             response_format="json_object",
             temperature=self._temperature,
@@ -123,6 +133,10 @@ class LlmStepProposalProvider(IStepProposalProvider):
 
         candidate = stripped[start : end + 1]
         return json.loads(candidate)
+
+    @staticmethod
+    def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
+        return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
 
 
 class SafeAugmentedLlmPlanner(IPlanner):

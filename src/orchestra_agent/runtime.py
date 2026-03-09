@@ -18,6 +18,7 @@ from orchestra_agent.adapters import (
     LlmStepExecutor,
     LlmStepProposalProvider,
     MockExcelMcpClient,
+    MultiEndpointMcpClient,
     OpenAILlmClient,
     SafeAugmentedLlmPlanner,
     StructuredLlmPlanner,
@@ -32,7 +33,7 @@ from orchestra_agent.application.use_cases import (
     ExecutePlanUseCase,
 )
 from orchestra_agent.executor import FailureHandler, PlanExecutor
-from orchestra_agent.ports import IPlanner
+from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
 
 type LlmProviderName = Literal["none", "file", "openai", "google"]
 type PlannerMode = Literal["deterministic", "augmented", "full"]
@@ -47,6 +48,7 @@ class RuntimeConfig:
     state_root: Path
     audit_root: Path
     mcp_endpoint: str | None = None
+    mcp_endpoints: tuple[str, ...] = ()
     llm_provider: LlmProviderName = "none"
     llm_proposal_file: str | None = None
     llm_openai_model: str = "gpt-4.1-mini"
@@ -71,16 +73,18 @@ class AppRuntime:
     workflow_repo: XmlWorkflowRepository
     step_plan_repo: FilesystemStepPlanRepository
     planner: IPlanner
-    mcp_client: JsonRpcMcpClient | MockExcelMcpClient
-    llm_client: OpenAILlmClient | GoogleGeminiLlmClient | None
+    mcp_client: IMcpClient
+    llm_client: ILlmClient | None
     audit_logger: FilesystemAuditLogger
     using_mock: bool
 
     def close(self) -> None:
-        if hasattr(self.mcp_client, "close"):
-            self.mcp_client.close()
-        if self.llm_client is not None:
-            self.llm_client.close()
+        close_mcp = getattr(self.mcp_client, "close", None)
+        if callable(close_mcp):
+            close_mcp()
+        close_llm = getattr(self.llm_client, "close", None)
+        if callable(close_llm):
+            close_llm()
 
 
 def resolve_path(value: str, workspace: Path) -> str:
@@ -105,15 +109,14 @@ def build_runtime(config: RuntimeConfig) -> AppRuntime:
     state_store = FilesystemAgentStateStore(config.state_root)
     audit_logger = FilesystemAuditLogger(config.audit_root)
 
-    endpoint = config.mcp_endpoint
-    if isinstance(endpoint, str) and not endpoint.strip():
-        endpoint = None
-    using_mock = endpoint is None
+    endpoints = _normalize_mcp_endpoints(config.mcp_endpoints, config.mcp_endpoint)
+    using_mock = not endpoints
     if using_mock:
-        mcp_client: JsonRpcMcpClient | MockExcelMcpClient = MockExcelMcpClient()
+        mcp_client: IMcpClient = MockExcelMcpClient()
+    elif len(endpoints) == 1:
+        mcp_client = JsonRpcMcpClient(endpoint=endpoints[0])
     else:
-        assert endpoint is not None
-        mcp_client = JsonRpcMcpClient(endpoint=endpoint)
+        mcp_client = MultiEndpointMcpClient(endpoints=endpoints)
 
     base_planner = LlmPlanner()
     proposal_provider, llm_client = _build_llm_provider(config)
@@ -122,6 +125,7 @@ def build_runtime(config: RuntimeConfig) -> AppRuntime:
         planner: IPlanner = StructuredLlmPlanner(
             llm_client=llm_client,
             available_tools_supplier=mcp_client.list_tools,
+            available_tool_catalog_supplier=lambda: _describe_mcp_tools(mcp_client),
             fallback_planner=base_planner,
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
@@ -247,3 +251,47 @@ def _resolve_planner_mode(config: RuntimeConfig) -> PlannerMode:
     if config.llm_provider == "file":
         return "augmented"
     return "deterministic"
+
+
+def _normalize_mcp_endpoints(
+    configured_endpoints: tuple[str, ...],
+    legacy_endpoint: str | None,
+) -> tuple[str, ...]:
+    normalized: list[str] = []
+
+    for endpoint in configured_endpoints:
+        if endpoint.strip() and endpoint not in normalized:
+            normalized.append(endpoint)
+
+    if (
+        legacy_endpoint is not None
+        and legacy_endpoint.strip()
+        and legacy_endpoint not in normalized
+    ):
+        normalized.append(legacy_endpoint)
+
+    return tuple(normalized)
+
+
+def _describe_mcp_tools(mcp_client: IMcpClient) -> list[dict[str, str]]:
+    describe_tools = getattr(mcp_client, "describe_tools", None)
+    if callable(describe_tools):
+        raw_tools = describe_tools()
+        described_tools: list[dict[str, str]] = []
+        for raw_tool in raw_tools:
+            if not isinstance(raw_tool, dict):
+                continue
+            name = raw_tool.get("name")
+            if not isinstance(name, str):
+                continue
+            description = raw_tool.get("description")
+            described_tools.append(
+                {
+                    "name": name,
+                    "description": description if isinstance(description, str) else "",
+                }
+            )
+        if described_tools:
+            return described_tools
+
+    return [{"name": tool_name, "description": ""} for tool_name in mcp_client.list_tools()]

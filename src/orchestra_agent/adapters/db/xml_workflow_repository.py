@@ -91,6 +91,10 @@ class XmlWorkflowRepository(IWorkflowRepository):
         ET.SubElement(root, "name").text = workflow.name
         ET.SubElement(root, "objective").text = workflow.objective
 
+        reference_files = ET.SubElement(root, "reference_files")
+        for item in workflow.reference_files:
+            ET.SubElement(reference_files, "item").text = item
+
         constraints = ET.SubElement(root, "constraints")
         for item in workflow.constraints:
             ET.SubElement(constraints, "item").text = item
@@ -121,6 +125,7 @@ class XmlWorkflowRepository(IWorkflowRepository):
 
         name = XmlWorkflowRepository._element_text(root, "name")
         objective = XmlWorkflowRepository._element_text(root, "objective")
+        reference_files = XmlWorkflowRepository._items(root, "reference_files")
         constraints = XmlWorkflowRepository._items(root, "constraints")
         success_criteria = XmlWorkflowRepository._items(root, "success_criteria")
         feedback_history = XmlWorkflowRepository._items(root, "feedback_history")
@@ -130,6 +135,7 @@ class XmlWorkflowRepository(IWorkflowRepository):
             name=name,
             version=int(version_str),
             objective=objective,
+            reference_files=reference_files,
             constraints=constraints,
             success_criteria=success_criteria,
             feedback_history=feedback_history,

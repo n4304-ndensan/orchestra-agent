@@ -5,12 +5,13 @@ from typing import Any
 
 from orchestra_agent.mcp_server.excel_service import ExcelWorkspaceService
 from orchestra_agent.mcp_server.file_service import WorkspaceFileService
-from orchestra_agent.mcp_server.jsonrpc_server import run_jsonrpc_mcp_server
+from orchestra_agent.mcp_server.jsonrpc_server import ToolGroup, run_jsonrpc_mcp_server
 
 
 def create_mcp_server(
     workspace_root: Path | str,
     server_name: str = "orchestra-workspace",
+    tool_group: ToolGroup = "all",
 ) -> Any:
     try:
         from mcp.server.fastmcp import FastMCP
@@ -25,14 +26,27 @@ def create_mcp_server(
     excel_service = ExcelWorkspaceService(workspace)
     mcp = FastMCP(server_name)
 
-    _register_file_tools(mcp, file_service)
-    _register_excel_tools(mcp, excel_service)
+    if tool_group in ("all", "files"):
+        _register_file_tools(mcp, file_service)
+    else:
+        _register_server_ping(mcp)
+
+    if tool_group in ("all", "excel"):
+        _register_excel_tools(mcp, excel_service)
 
     return mcp
 
 
-def run_mcp_server(workspace_root: Path | str, server_name: str = "orchestra-workspace") -> None:
-    server = create_mcp_server(workspace_root=workspace_root, server_name=server_name)
+def run_mcp_server(
+    workspace_root: Path | str,
+    server_name: str = "orchestra-workspace",
+    tool_group: ToolGroup = "all",
+) -> None:
+    server = create_mcp_server(
+        workspace_root=workspace_root,
+        server_name=server_name,
+        tool_group=tool_group,
+    )
     server.run()
 
 
@@ -41,15 +55,19 @@ def run_jsonrpc_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     path: str = "/mcp",
+    tool_group: ToolGroup = "all",
 ) -> None:
-    run_jsonrpc_mcp_server(workspace_root=workspace_root, host=host, port=port, rpc_path=path)
+    run_jsonrpc_mcp_server(
+        workspace_root=workspace_root,
+        host=host,
+        port=port,
+        rpc_path=path,
+        tool_group=tool_group,
+    )
 
 
 def _register_file_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
-    @mcp.tool()  # type: ignore[untyped-decorator]
-    def server_ping() -> dict[str, str]:
-        """Health check for the MCP server."""
-        return {"status": "ok"}
+    _register_server_ping(mcp)
 
     @mcp.tool()  # type: ignore[untyped-decorator]
     def fs_list_entries(path: str = ".") -> dict[str, Any]:
@@ -74,6 +92,13 @@ def _register_file_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
         """Write a text file under the workspace."""
         result = file_service.write_text(path, content, overwrite=overwrite, encoding=encoding)
         return {"written": result}
+
+
+def _register_server_ping(mcp: Any) -> None:
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def server_ping() -> dict[str, str]:
+        """Health check for the MCP server."""
+        return {"status": "ok"}
 
 
 def _register_excel_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:

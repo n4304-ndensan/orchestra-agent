@@ -1,6 +1,6 @@
 # orchestra-agent
 
-Workflow-driven orchestration control plane for Excel automation via HTTP JSON-RPC MCP servers.
+Workflow-driven orchestration control plane for AI-assisted automation via HTTP JSON-RPC MCP servers.
 
 資料:
 - [Current Status and Flow](docs/current-status.md)
@@ -10,15 +10,26 @@ Workflow-driven orchestration control plane for Excel automation via HTTP JSON-R
 `orchestra-agent` manages:
 
 - workflow creation
+- MCP-backed tool discovery and execution
+- multi-file references for LLM requests
 - step-plan compilation
 - policy evaluation and approval gating
-- snapshot-before-mutation
-- execution orchestration via MCP
+- pre-step snapshots for comparison and rollback
+- execution orchestration across one or more MCP servers
 - failure recovery with feedback and replanning
 - audit logging and run-state tracking
 - HTTP control plane API
 
-The agent does not execute Excel operations directly. It delegates tool calls to external MCP servers.
+Excel automation is one bundled capability, not the whole product. The core design is "turn any procedure into a governed workflow", then execute approved steps through MCP tools.
+
+Execution boundary:
+
+- With a live LLM provider, AI plans the workflow and also orchestrates each step against the MCP runtime.
+- MCP servers remain the execution substrate that actually touches files, Excel workbooks, and other local systems.
+- The runtime enforces approval gates, pre-step snapshots, audit logs, and recovery around those AI decisions.
+- Built-in MCP roles are currently `files` and `excel`, and the runtime can aggregate additional JSON-RPC MCP servers.
+
+`llm.provider = openai` or `google` enables the full AI-controlled mode. `none` keeps a deterministic local-safe profile.
 
 ## Implemented architecture
 
@@ -28,6 +39,7 @@ The agent does not execute Excel operations directly. It delegates tool calls to
   - `planner/llm_planner.py`
   - `policy/default_policy_engine.py`
   - `mcp/jsonrpc_mcp_client.py`
+  - `mcp/multi_endpoint_mcp_client.py`
   - `snapshot/filesystem_snapshot_manager.py`
   - `db/filesystem_agent_state_store.py`
   - `db/filesystem_audit_logger.py`
@@ -49,9 +61,10 @@ The agent does not execute Excel operations directly. It delegates tool calls to
 - `control_plane.py`
 - `mcp_server/`
   - `jsonrpc_server.py`
+  - `file_service.py`
   - `excel_service.py`
 
-## Excel automation flow
+## Automation flow
 
 Input example:
 
@@ -72,9 +85,21 @@ Execution behavior:
 - skip/run flags respected
 - mandatory approval before every step execution
 - mandatory review approval after every step execution (approve or feedback)
-- snapshot before mutating steps
+- pre-step snapshot before every executed step
 - failure/feedback pipeline: restore -> log -> workflow XML feedback update -> replan -> approval -> resume
 - final completion locks workflow and step plan artifacts
+
+With a live LLM provider, step execution runs through an AI-controlled MCP runtime. The model
+receives the step description, planned tool, resolved input, dependency results, and the current
+MCP tool catalog with descriptions. It can call one or more MCP tools, request real file
+attachments, write workspace files, and then set the final step result.
+
+During agentic execution, the model first sees a workspace file index. If it decides it needs one
+or more real files, it can return a `request_file_attachments` action, and the executor will
+re-query the LLM with those files attached to the message.
+
+The default deterministic draft planner is still optimized for the bundled Excel profile. When a
+live LLM planner is enabled, planning becomes tool-aware across all discovered MCP servers.
 
 ## Quick start
 
@@ -83,6 +108,7 @@ Execution behavior:
 All runtime settings can be managed from a single TOML file:
 
 - [orchestra-agent.toml](orchestra-agent.toml)
+- add more MCP runtimes by appending more `[[mcp.servers]]` blocks
 - API keys stay in environment variables only
 - `OPENAI_API_KEY`
 - `GEMINI_API_KEY`
@@ -97,8 +123,10 @@ docker compose up --build
 
 Services:
 
-- MCP server: `http://127.0.0.1:8000/health`
+- Files MCP server: `http://127.0.0.1:8010/health`
+- Excel MCP server: `http://127.0.0.1:8020/health`
 - Control plane API: `http://127.0.0.1:9000/health`
+- Tool catalog: `http://127.0.0.1:9000/tools`
 
 Run the one-shot CLI in Docker:
 
@@ -108,41 +136,50 @@ docker compose run --rm orchestra-cli "sales.xlsxのC列を集計してsummary.x
 
 ### Direct local startup
 
-Recommended: run with the built-in HTTP Excel MCP server.
+Recommended local topology: run the built-in MCP roles separately and let the runtime aggregate them.
 
 ```powershell
-uv run --extra mcp-server orchestra-agent-mcp --config .\orchestra-agent.toml
+uv run --extra mcp-server orchestra-agent-mcp --config .\orchestra-agent.toml --server files
+uv run --extra mcp-server orchestra-agent-mcp --config .\orchestra-agent.toml --server excel
 ```
 
 Then execute the workflow through the CLI:
 
 ```powershell
-uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集計してsummary.xlsxへ" --mcp-endpoint http://127.0.0.1:8000/mcp
+uv run orchestra-agent --config .\orchestra-agent.toml `
+  "sales.xlsxのC列を集計してsummary.xlsxへ" `
+  --mcp-endpoint http://127.0.0.1:8010/mcp `
+  --mcp-endpoint http://127.0.0.1:8020/mcp
 ```
 
 Run the control plane API:
 
 ```powershell
-uv run orchestra-agent-api --config .\orchestra-agent.toml --mcp-endpoint http://127.0.0.1:8000/mcp
+uv run orchestra-agent-api --config .\orchestra-agent.toml `
+  --mcp-endpoint http://127.0.0.1:8010/mcp `
+  --mcp-endpoint http://127.0.0.1:8020/mcp
 ```
 
 Fast local verification without an external MCP server is still available in mock mode:
 
 ```powershell
-uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集計してsummary.xlsxへ" --mcp-endpoint ""
+uv run orchestra-agent --config .\orchestra-agent.toml `
+  "sales.xlsxのC列を集計してsummary.xlsxへ" `
+  --mcp-endpoint ""
 ```
 
 Built-in MCP server transports:
 
 ```powershell
-uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport http
-uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport stdio
+uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport http --tool-group all
+uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport stdio --tool-group files
 ```
 
 Workflow / plan / state / audit 保存:
 
 - config の `workspace.root = "./workspace"` を起点に保存
 - workflow は `workspace/workflow/<workflow_id>/workflow.xml`
+- workflow XML には `reference_files` も保存
 - step plan は `workspace/plan/<workflow_id>/<step_plan_id>/step_plan_v{n}.json`
 - run state は `workspace/.orchestra_state/runs/<run_id>.json`
 - audit log は `workspace/.orchestra_state/audit/events.ndjson`
@@ -166,6 +203,30 @@ workflow IDを固定して新規作成＋実行:
 uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集計してsummary.xlsxへ" --workflow-id wf-sales-summary
 ```
 
+LLM step 実行時に、モデルが必要と判断したファイルを後続ターンで添付:
+
+```powershell
+uv run orchestra-agent --config .\orchestra-agent.toml `
+  "sales.xlsxのC列を集計してsummary.xlsxへ" `
+  --llm-provider openai
+```
+
+`orchestra.llm_execute` step では、LLM は次のような action を返せます:
+
+```json
+{
+  "actions": [
+    {
+      "type": "request_file_attachments",
+      "paths": ["specs/requirements.pdf", "specs/mapping.csv"],
+      "reason": "Need the source documents"
+    }
+  ]
+}
+```
+
+これを受けて executor は対象ファイルを添付し、同じ step を再度 LLM に問い合わせます。
+
 ### Control plane API examples
 
 Create a workflow:
@@ -173,8 +234,11 @@ Create a workflow:
 ```powershell
 curl -X POST http://127.0.0.1:9000/workflows `
   -H "Content-Type: application/json" `
-  -d '{"name":"Excel summary","objective":"sales.xlsxのC列を集計してsummary.xlsxへ"}'
+  -d '{"name":"Excel summary","objective":"sales.xlsxのC列を集計してsummary.xlsxへ","reference_files":["./workspace/specs/requirements.pdf","./workspace/specs/mapping.csv"]}'
 ```
+
+`reference_files` は事前ヒントとして使えますが、必須ではありません。`orchestra.llm_execute`
+では workspace index を見た LLM が実行中に追加ファイルを要求できます。
 
 Generate a plan:
 
@@ -196,8 +260,8 @@ curl -X POST http://127.0.0.1:9000/runs/run-1/approval `
 
 ### Safe LLM augmentation
 
-Current planner is deterministic by default.
-You can safely augment it by giving a proposal patch file:
+Deterministic mode remains available for the bundled safe Excel profile.
+You can also augment that draft by giving a proposal patch file:
 
 ```powershell
 uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集計してsummary.xlsxへ" --llm-proposal-file llm_patch.json
@@ -221,13 +285,13 @@ uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集�
 Safety properties:
 - starts from deterministic draft plan
 - proposal may patch existing steps only
-- tool refs are restricted to Excel allow-list
+- tool refs are restricted to the approved allow-list
 - final plan must still pass domain validation (including DAG)
 - invalid proposal is rejected and deterministic plan is used
 
 ### Live OpenAI integration
 
-Enable live LLM proposal generation:
+Enable live LLM planning:
 
 ```powershell
 $env:OPENAI_API_KEY="your_api_key"
@@ -235,13 +299,15 @@ uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集�
 ```
 
 Notes:
-- OpenAI is used only for proposal generation (patches).
+- Live OpenAI defaults to `planner_mode = "full"` unless overridden.
+- The model can plan across all discovered MCP tools plus `orchestra.llm_execute`.
+- Standard step execution is also routed through the AI MCP runtime when a live LLM is configured.
 - The final plan still goes through strict safety validation.
 - If OpenAI output is malformed or unsafe, the planner falls back to deterministic mode.
 
 ### Live Google Gemini Developer API integration
 
-Enable live LLM proposal generation with the Gemini Developer API:
+Enable live LLM planning with the Gemini Developer API:
 
 ```powershell
 $env:GEMINI_API_KEY="your_api_key"
@@ -250,7 +316,9 @@ uv run orchestra-agent --config .\orchestra-agent.toml "sales.xlsxのC列を集�
 
 Notes:
 - `GEMINI_API_KEY` is used by default, and `GOOGLE_API_KEY` is also accepted as a fallback.
-- Gemini is used only for proposal generation (patches).
+- Live Gemini defaults to `planner_mode = "full"` unless overridden.
+- The model can plan across all discovered MCP tools plus `orchestra.llm_execute`.
+- Standard step execution is also routed through the AI MCP runtime when a live LLM is configured.
 - The final plan still goes through strict safety validation.
 - If Gemini output is malformed or unsafe, the planner falls back to deterministic mode.
 

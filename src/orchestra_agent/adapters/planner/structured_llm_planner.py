@@ -9,7 +9,12 @@ from orchestra_agent.domain.enums import BackupScope, RiskLevel
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
-from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest, LlmMessage
+from orchestra_agent.ports.llm_client import (
+    ILlmClient,
+    LlmAttachment,
+    LlmGenerateRequest,
+    LlmMessage,
+)
 from orchestra_agent.ports.planner import IPlanner
 
 
@@ -24,12 +29,14 @@ class StructuredLlmPlanner(IPlanner):
         self,
         llm_client: ILlmClient,
         available_tools_supplier: Callable[[], list[str]],
+        available_tool_catalog_supplier: Callable[[], list[dict[str, str]]] | None = None,
         fallback_planner: IPlanner | None = None,
         temperature: float = 0.0,
         max_tokens: int = 2400,
     ) -> None:
         self._llm_client = llm_client
         self._available_tools_supplier = available_tools_supplier
+        self._available_tool_catalog_supplier = available_tool_catalog_supplier
         self._fallback_planner = fallback_planner
         self._temperature = temperature
         self._max_tokens = max_tokens
@@ -38,7 +45,8 @@ class StructuredLlmPlanner(IPlanner):
     def compile_step_plan(self, workflow: Workflow) -> StepPlan:
         self.last_warning = None
         try:
-            allowed_tools = self._allowed_tools()
+            available_tool_catalog = self._available_tool_catalog()
+            allowed_tools = {tool["name"] for tool in available_tool_catalog}
             request = LlmGenerateRequest(
                 messages=(
                     LlmMessage(role="system", content=self._system_prompt()),
@@ -50,15 +58,17 @@ class StructuredLlmPlanner(IPlanner):
                                     "workflow_id": workflow.workflow_id,
                                     "name": workflow.name,
                                     "objective": workflow.objective,
+                                    "reference_files": workflow.reference_files,
                                     "constraints": workflow.constraints,
                                     "success_criteria": workflow.success_criteria,
                                     "feedback_history": workflow.feedback_history,
                                 },
-                                "available_tools": sorted(allowed_tools),
+                                "available_tools": available_tool_catalog,
                             },
                             ensure_ascii=False,
                             indent=2,
                         ),
+                        attachments=self._workflow_attachments(workflow),
                     ),
                 ),
                 response_format="json_object",
@@ -79,6 +89,35 @@ class StructuredLlmPlanner(IPlanner):
         tools.update(self._available_tools_supplier())
         return tools
 
+    def _available_tool_catalog(self) -> list[dict[str, str]]:
+        if self._available_tool_catalog_supplier is not None:
+            catalog = [
+                {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                }
+                for tool in self._available_tool_catalog_supplier()
+                if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+            ]
+            if catalog:
+                builtin_tools = [
+                    {
+                        "name": tool_name,
+                        "description": "AI-orchestrated step runtime for multi-tool execution.",
+                    }
+                    for tool_name in sorted(self._builtin_tool_refs)
+                ]
+                return sorted(builtin_tools + catalog, key=lambda item: item["name"])
+
+        return [
+            {"name": tool_name, "description": ""}
+            for tool_name in sorted(self._allowed_tools())
+        ]
+
+    @staticmethod
+    def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
+        return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
+
     @staticmethod
     def _system_prompt() -> str:
         return (
@@ -89,7 +128,7 @@ class StructuredLlmPlanner(IPlanner):
             "Rules:\n"
             "1) Create the full plan, not a patch.\n"
             "2) step_id must be unique and dependency-safe.\n"
-            "3) tool_ref must be one of the provided available_tools.\n"
+            "3) tool_ref must be one of the provided available_tools[].name values.\n"
             "4) Use orchestra.llm_execute when the step needs local workspace edits or "
             "multi-tool orchestration.\n"
             "5) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "

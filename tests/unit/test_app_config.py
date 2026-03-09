@@ -32,6 +32,16 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
                 "[mcp]",
                 'endpoint = "http://orchestra-mcp:8000/mcp"',
                 "",
+                "[[mcp.servers]]",
+                'name = "files"',
+                'endpoint = "http://orchestra-mcp-files:8010/mcp"',
+                'tool_group = "files"',
+                "",
+                "[[mcp.servers]]",
+                'name = "excel"',
+                'endpoint = "http://orchestra-mcp-excel:8020/mcp"',
+                'tool_group = "excel"',
+                "",
                 "[runtime]",
                 "auto_approve = false",
             ]
@@ -42,6 +52,11 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
     config = load_app_config(config_path)
 
     assert config.mcp.endpoint == "http://orchestra-mcp:8000/mcp"
+    assert config.mcp.runtime_endpoints() == (
+        "http://orchestra-mcp-files:8010/mcp",
+        "http://orchestra-mcp-excel:8020/mcp",
+    )
+    assert config.mcp.resolve_server("excel").tool_group == "excel"
     assert config.runtime.auto_approve is False
     assert config.resolve_workspace() == (sandbox_dir / "runtime").resolve()
     assert config.resolve_within_workspace("workflow", config.resolve_workspace()) == (

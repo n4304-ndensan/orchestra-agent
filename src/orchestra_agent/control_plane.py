@@ -45,6 +45,15 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if parsed.path == "/tools":
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "tools": _describe_mcp_tools(self.server.runtime.mcp_client),
+                    },
+                )
+                return
+
             if len(segments) == 2 and segments[0] == "workflows":
                 self._send_json(HTTPStatus.OK, self._get_workflow(segments[1]))
                 return
@@ -73,6 +82,8 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
             self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", "Resource not found.")
         except KeyError as exc:
             self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", str(exc))
+        except FileNotFoundError as exc:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
         except ValueError as exc:
             self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
 
@@ -119,12 +130,16 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
     def _create_workflow(self, body: dict[str, Any]) -> dict[str, Any]:
         name = _required_str(body, "name")
         objective = _required_str(body, "objective")
+        reference_files = self._resolve_reference_files(
+            _optional_str_list(body.get("reference_files"))
+        )
         constraints = _optional_str_list(body.get("constraints"))
         success_criteria = _optional_str_list(body.get("success_criteria"))
         workflow_id = _optional_str(body.get("workflow_id"))
         return self.server.runtime.workflow_api.create_workflow(
             name=name,
             objective=objective,
+            reference_files=reference_files,
             constraints=constraints,
             success_criteria=success_criteria,
             workflow_id=workflow_id,
@@ -173,6 +188,17 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
             approve=approve,
             feedback=feedback,
         )
+
+    def _resolve_reference_files(self, raw_files: list[str] | None) -> list[str] | None:
+        if raw_files is None:
+            return None
+        resolved_files: list[str] = []
+        for raw_file in raw_files:
+            resolved = (self.server.workspace / raw_file).resolve()
+            if not resolved.is_file():
+                raise FileNotFoundError(f"Reference file '{resolved}' was not found.")
+            resolved_files.append(str(resolved))
+        return resolved_files
 
     def _read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -235,8 +261,9 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mcp-endpoint",
-        default=defaults.mcp.endpoint,
-        help="JSON-RPC MCP endpoint URL.",
+        action="append",
+        default=None,
+        help="JSON-RPC MCP endpoint URL. Repeat to aggregate multiple MCP servers.",
     )
     parser.add_argument(
         "--llm-provider",
@@ -277,6 +304,23 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_mcp_endpoints(
+    raw_endpoints: list[str] | None,
+    config: AppConfig,
+) -> tuple[str, ...]:
+    if raw_endpoints is not None:
+        candidates = raw_endpoints
+    else:
+        candidates = list(config.mcp.runtime_endpoints())
+    resolved: list[str] = []
+    for candidate in candidates:
+        if not candidate.strip():
+            continue
+        if candidate not in resolved:
+            resolved.append(candidate)
+    return tuple(resolved)
+
+
 def main(argv: list[str] | None = None) -> int:
     config_path = resolve_config_path(argv)
     config = load_app_config(config_path)
@@ -293,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshots_dir=config.resolve_within_workspace(args.snapshots_dir, workspace),
             state_root=config.resolve_within_workspace(args.state_root, workspace),
             audit_root=config.resolve_within_workspace(args.audit_root, workspace),
-            mcp_endpoint=args.mcp_endpoint,
+            mcp_endpoints=_resolve_mcp_endpoints(args.mcp_endpoint, config),
             llm_provider=args.llm_provider,
             llm_proposal_file=args.llm_proposal_file,
             llm_openai_model=args.llm_openai_model,
@@ -330,6 +374,7 @@ def _serialize_workflow(workflow: Workflow) -> dict[str, Any]:
         "name": workflow.name,
         "version": workflow.version,
         "objective": workflow.objective,
+        "reference_files": workflow.reference_files,
         "constraints": workflow.constraints,
         "success_criteria": workflow.success_criteria,
         "feedback_history": workflow.feedback_history,
@@ -404,6 +449,30 @@ def _optional_bool_map(value: Any) -> dict[str, bool] | None:
         if not isinstance(item, bool):
             raise ValueError("Expected an object whose values are booleans.")
     return {str(key): value for key, value in value.items()}
+
+
+def _describe_mcp_tools(mcp_client: Any) -> list[dict[str, str]]:
+    describe_tools = getattr(mcp_client, "describe_tools", None)
+    if callable(describe_tools):
+        raw_tools = describe_tools()
+        tools: list[dict[str, str]] = []
+        for raw_tool in raw_tools:
+            if not isinstance(raw_tool, dict):
+                continue
+            name = raw_tool.get("name")
+            if not isinstance(name, str):
+                continue
+            description = raw_tool.get("description")
+            tools.append(
+                {
+                    "name": name,
+                    "description": description if isinstance(description, str) else "",
+                }
+            )
+        if tools:
+            return tools
+
+    return [{"name": name, "description": ""} for name in mcp_client.list_tools()]
 
 
 if __name__ == "__main__":

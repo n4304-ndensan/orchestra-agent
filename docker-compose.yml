@@ -1,10 +1,10 @@
 services:
-  orchestra-mcp:
+  orchestra-mcp-files:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: orchestra-mcp
-    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml"]
+    container_name: orchestra-mcp-files
+    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml", "--server", "files"]
     working_dir: /workspace/project
     volumes:
       - ./:/workspace/project
@@ -12,7 +12,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
-      - "8000:8000"
+      - "8010:8010"
     restart: unless-stopped
     healthcheck:
       test:
@@ -20,7 +20,35 @@ services:
           "CMD",
           "python",
           "-c",
-          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health'))['status'])",
+          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8010/health'))['status'])",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  orchestra-mcp-excel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestra-mcp-excel
+    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml", "--server", "excel"]
+    working_dir: /workspace/project
+    volumes:
+      - ./:/workspace/project
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "8020:8020"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8020/health'))['status'])",
         ]
       interval: 10s
       timeout: 5s
@@ -43,7 +71,9 @@ services:
       - "9000:9000"
     restart: unless-stopped
     depends_on:
-      orchestra-mcp:
+      orchestra-mcp-files:
+        condition: service_healthy
+      orchestra-mcp-excel:
         condition: service_healthy
     healthcheck:
       test:
@@ -72,5 +102,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     depends_on:
-      orchestra-mcp:
+      orchestra-mcp-files:
+        condition: service_healthy
+      orchestra-mcp-excel:
         condition: service_healthy

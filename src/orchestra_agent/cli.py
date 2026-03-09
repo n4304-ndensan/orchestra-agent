@@ -21,7 +21,7 @@ from orchestra_agent.runtime import (
 def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     defaults = config or AppConfig()
     parser = argparse.ArgumentParser(
-        description="Run orchestra-agent Excel workflow from a single prompt."
+        description="Run orchestra-agent workflow orchestration from a single prompt."
     )
     parser.add_argument(
         "--config",
@@ -31,7 +31,13 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     parser.add_argument(
         "objective",
         nargs="?",
-        help="High-level objective text, e.g. sales.xlsxのC列を集計してsummary.xlsxへ",
+        help="High-level objective text, e.g. 売上Excelを集計してsummary.xlsxへ",
+    )
+    parser.add_argument(
+        "--reference-file",
+        action="append",
+        default=None,
+        help="Attach a local reference file to LLM requests. Repeatable.",
     )
     parser.add_argument("--workflow-id", default=None, help="Existing workflow ID to execute")
     parser.add_argument(
@@ -77,8 +83,9 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mcp-endpoint",
-        default=defaults.mcp.endpoint,
-        help="JSON-RPC MCP endpoint URL",
+        action="append",
+        default=None,
+        help="JSON-RPC MCP endpoint URL. Repeat to aggregate multiple MCP servers.",
     )
     parser.add_argument(
         "--llm-provider",
@@ -229,6 +236,7 @@ def _resolve_workflow_id(
         created = runtime.workflow_api.create_workflow(
             name=args.name,
             objective=args.objective,
+            reference_files=_resolve_reference_files(args.reference_file, workspace),
             workflow_id=args.workflow_id,
         )
         return str(created["workflow_id"])
@@ -239,8 +247,38 @@ def _resolve_workflow_id(
     created = runtime.workflow_api.create_workflow(
         name=args.name,
         objective=args.objective,
+        reference_files=_resolve_reference_files(args.reference_file, workspace),
     )
     return str(created["workflow_id"])
+
+
+def _resolve_reference_files(raw_files: list[str] | None, workspace: Path) -> list[str]:
+    if not raw_files:
+        return []
+    resolved_files: list[str] = []
+    for raw_file in raw_files:
+        resolved = Path(resolve_path(raw_file, workspace))
+        if not resolved.is_file():
+            raise FileNotFoundError(f"Reference file '{resolved}' was not found.")
+        resolved_files.append(str(resolved))
+    return resolved_files
+
+
+def _resolve_mcp_endpoints(
+    raw_endpoints: list[str] | None,
+    config: AppConfig,
+) -> tuple[str, ...]:
+    if raw_endpoints is not None:
+        candidates = raw_endpoints
+    else:
+        candidates = list(config.mcp.runtime_endpoints())
+    resolved: list[str] = []
+    for candidate in candidates:
+        if not candidate.strip():
+            continue
+        if candidate not in resolved:
+            resolved.append(candidate)
+    return tuple(resolved)
 
 
 def _start_and_resume(
@@ -373,7 +411,7 @@ def _run(args: argparse.Namespace, config: AppConfig) -> int:
             plan_root=plan_root,
             state_root=state_root,
             audit_root=audit_root,
-            mcp_endpoint=args.mcp_endpoint,
+            mcp_endpoints=_resolve_mcp_endpoints(args.mcp_endpoint, config),
             llm_provider=args.llm_provider,
             llm_proposal_file=args.llm_proposal_file,
             llm_openai_model=args.llm_openai_model,
