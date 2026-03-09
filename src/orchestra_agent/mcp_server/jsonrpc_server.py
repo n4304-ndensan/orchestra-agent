@@ -216,6 +216,31 @@ def build_tool_registry(workspace_root: Path, tool_group: ToolGroup = "all") -> 
             },
         )
         registry.register(
+            "fs_find_entries",
+            "Search file and directory names under the workspace.",
+            lambda args: file_service.find_entries(
+                pattern=str(args["pattern"]),
+                path=str(args.get("path", ".")),
+                case_sensitive=bool(args.get("case_sensitive", False)),
+                regex=bool(args.get("regex", False)),
+                include_dirs=bool(args.get("include_dirs", False)),
+                max_results=_as_int(args.get("max_results", 200), "max_results"),
+            ),
+        )
+        registry.register(
+            "fs_grep_text",
+            "Search text content recursively and return line matches.",
+            lambda args: file_service.grep_text(
+                pattern=str(args["pattern"]),
+                path=str(args.get("path", ".")),
+                case_sensitive=bool(args.get("case_sensitive", False)),
+                regex=bool(args.get("regex", False)),
+                file_glob=_optional_str(args.get("file_glob")),
+                max_results=_as_int(args.get("max_results", 200), "max_results"),
+                encoding=str(args.get("encoding", "utf-8")),
+            ),
+        )
+        registry.register(
             "fs_write_text",
             "Write a text file under the workspace.",
             lambda args: {
@@ -240,6 +265,28 @@ def build_tool_registry(workspace_root: Path, tool_group: ToolGroup = "all") -> 
             lambda args: excel_service.read_sheet(
                 path=str(args["file"]),
                 sheet=str(args["sheet"]),
+            ),
+        )
+        registry.register(
+            "excel.read_cells",
+            "Read specific worksheet cells.",
+            lambda args: excel_service.read_cells(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
+                cells=_require_str_list(args.get("cells"), field_name="cells"),
+            ),
+        )
+        registry.register(
+            "excel.grep_cells",
+            "Search workbook cell values like grep.",
+            lambda args: excel_service.grep_cells(
+                path=str(args["file"]),
+                pattern=str(args["pattern"]),
+                sheet=_optional_str(args.get("sheet")),
+                case_sensitive=bool(args.get("case_sensitive", False)),
+                regex=bool(args.get("regex", False)),
+                exact=bool(args.get("exact", False)),
+                max_results=_as_int(args.get("max_results", 100), "max_results"),
             ),
         )
         registry.register(
@@ -269,6 +316,25 @@ def build_tool_registry(workspace_root: Path, tool_group: ToolGroup = "all") -> 
                 path=str(args["file"]),
                 sheet=str(args["sheet"]),
                 cells=_require_cells(args.get("cells")),
+            ),
+        )
+        registry.register(
+            "excel.list_images",
+            "List embedded worksheet images and their anchor cells.",
+            lambda args: excel_service.list_images(
+                path=str(args["file"]),
+                sheet=_optional_str(args.get("sheet")),
+            ),
+        )
+        registry.register(
+            "excel.extract_image",
+            "Extract a specific embedded image into the workspace.",
+            lambda args: excel_service.extract_image(
+                path=str(args["file"]),
+                sheet=str(args["sheet"]),
+                image_index=_as_int(args["image_index"], "image_index"),
+                output=_optional_str(args.get("output")),
+                overwrite=bool(args.get("overwrite", False)),
             ),
         )
         registry.register(
@@ -309,3 +375,23 @@ def _require_cells(raw_cells: Any) -> dict[str, Any]:
     if not isinstance(raw_cells, dict):
         raise ValueError("excel.write_cells requires object 'cells'.")
     return raw_cells
+
+
+def _require_str_list(raw_value: Any, *, field_name: str) -> list[str]:
+    if not isinstance(raw_value, list) or not all(isinstance(item, str) for item in raw_value):
+        raise ValueError(f"{field_name} requires an array of strings.")
+    return raw_value
+
+
+def _optional_str(raw_value: Any) -> str | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError("Expected a string or null.")
+    return raw_value
+
+
+def _as_int(raw_value: Any, field_name: str) -> int:
+    if not isinstance(raw_value, int) or isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be an integer.")
+    return raw_value

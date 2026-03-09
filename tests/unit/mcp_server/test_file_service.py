@@ -57,3 +57,34 @@ def test_read_size_limit_is_enforced(sandbox_dir: Path) -> None:
     (sandbox_dir / "big.txt").write_text("1234", encoding="utf-8")
     with pytest.raises(ValueError):
         service.read_text("big.txt")
+
+
+def test_find_entries_searches_recursively(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    (sandbox_dir / "docs").mkdir()
+    (sandbox_dir / "docs" / "meeting-notes.txt").write_text("hello", encoding="utf-8")
+    (sandbox_dir / "archive").mkdir()
+    (sandbox_dir / "archive" / "meeting-summary.txt").write_text("world", encoding="utf-8")
+
+    result = service.find_entries("meeting", include_dirs=False)
+
+    assert [match["path"] for match in result["matches"]] == [
+        "archive/meeting-summary.txt",
+        "docs/meeting-notes.txt",
+    ]
+    assert result["truncated"] is False
+
+
+def test_grep_text_returns_line_matches(sandbox_dir: Path) -> None:
+    service = WorkspaceFileService(sandbox_dir)
+    (sandbox_dir / "notes").mkdir()
+    (sandbox_dir / "notes" / "a.txt").write_text("first\nkeyword here\nlast", encoding="utf-8")
+    (sandbox_dir / "notes" / "b.txt").write_text("nothing\nKEYWORD again", encoding="utf-8")
+
+    result = service.grep_text("keyword", path="notes")
+
+    assert result["matches"] == [
+        {"path": "notes/a.txt", "line_number": 2, "line": "keyword here"},
+        {"path": "notes/b.txt", "line_number": 2, "line": "KEYWORD again"},
+    ]
+    assert result["truncated"] is False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,14 @@ class MockExcelMcpClient(IMcpClient):
                 "description": "Read worksheet rows as dictionaries keyed by column letters.",
             },
             {
+                "name": "excel.read_cells",
+                "description": "Read specific worksheet cells.",
+            },
+            {
+                "name": "excel.grep_cells",
+                "description": "Search workbook cell values like grep.",
+            },
+            {
                 "name": "excel.calculate_sum",
                 "description": "Calculate a numeric sum for a worksheet column range.",
             },
@@ -42,6 +51,14 @@ class MockExcelMcpClient(IMcpClient):
                 "description": "Write values into worksheet cells.",
             },
             {
+                "name": "excel.list_images",
+                "description": "List embedded worksheet images and anchor cells.",
+            },
+            {
+                "name": "excel.extract_image",
+                "description": "Extract a specific embedded image to the workspace.",
+            },
+            {
                 "name": "excel.save_file",
                 "description": "Save or export a workbook to an output path.",
             },
@@ -52,28 +69,72 @@ class MockExcelMcpClient(IMcpClient):
         if tool_ref in self.fail_tools:
             raise RuntimeError(f"forced failure: {tool_ref}")
 
-        if tool_ref == "excel.open_file":
-            file_name = input["file"]
-            return {"opened": file_name}
-        if tool_ref == "excel.read_sheet":
-            return {"rows": [{"C": 10}, {"C": 20}, {"C": 30}]}
-        if tool_ref == "excel.calculate_sum":
-            self._last_total = 60
-            return {"total": self._last_total}
-        if tool_ref == "excel.create_sheet":
-            return {"created": input["sheet"]}
-        if tool_ref == "excel.write_cells":
-            cells = input.get("cells", {})
-            if isinstance(cells, dict):
-                b2 = cells.get("B2")
-                if isinstance(b2, int) and b2 != self._last_total:
-                    raise RuntimeError("write_cells expected resolved total in B2")
-            return {"written_cells": len(cells) if isinstance(cells, dict) else 0}
-        if tool_ref == "excel.save_file":
-            output = Path(str(input["output"]))
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("summary", encoding="utf-8")
-            return {"output": str(output)}
+        handler = self._tool_handlers().get(tool_ref)
+        if handler is None:
+            raise KeyError(f"Unsupported mock tool '{tool_ref}'.")
+        return handler(input)
 
-        raise KeyError(f"Unsupported mock tool '{tool_ref}'.")
+    def _tool_handlers(self) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+        return {
+            "excel.open_file": self._open_file,
+            "excel.read_sheet": self._read_sheet,
+            "excel.read_cells": self._read_cells,
+            "excel.grep_cells": self._grep_cells,
+            "excel.calculate_sum": self._calculate_sum,
+            "excel.create_sheet": self._create_sheet,
+            "excel.write_cells": self._write_cells,
+            "excel.list_images": self._list_images,
+            "excel.extract_image": self._extract_image,
+            "excel.save_file": self._save_file,
+        }
+
+    @staticmethod
+    def _open_file(input: dict[str, Any]) -> dict[str, Any]:
+        return {"opened": input["file"]}
+
+    @staticmethod
+    def _read_sheet(_: dict[str, Any]) -> dict[str, Any]:
+        return {"rows": [{"C": 10}, {"C": 20}, {"C": 30}]}
+
+    @staticmethod
+    def _read_cells(input: dict[str, Any]) -> dict[str, Any]:
+        cells = input.get("cells", [])
+        if not isinstance(cells, list):
+            return {"cells": {}}
+        return {"cells": {str(cell): None for cell in cells}}
+
+    @staticmethod
+    def _grep_cells(_: dict[str, Any]) -> dict[str, Any]:
+        return {"matches": []}
+
+    def _calculate_sum(self, _: dict[str, Any]) -> dict[str, Any]:
+        self._last_total = 60
+        return {"total": self._last_total}
+
+    @staticmethod
+    def _create_sheet(input: dict[str, Any]) -> dict[str, Any]:
+        return {"created": input["sheet"]}
+
+    def _write_cells(self, input: dict[str, Any]) -> dict[str, Any]:
+        cells = input.get("cells", {})
+        if isinstance(cells, dict):
+            b2 = cells.get("B2")
+            if isinstance(b2, int) and b2 != self._last_total:
+                raise RuntimeError("write_cells expected resolved total in B2")
+        return {"written_cells": len(cells) if isinstance(cells, dict) else 0}
+
+    @staticmethod
+    def _list_images(_: dict[str, Any]) -> dict[str, Any]:
+        return {"images": []}
+
+    @staticmethod
+    def _extract_image(_: dict[str, Any]) -> dict[str, Any]:
+        return {"output": None}
+
+    @staticmethod
+    def _save_file(input: dict[str, Any]) -> dict[str, Any]:
+        output = Path(str(input["output"]))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("summary", encoding="utf-8")
+        return {"output": str(output)}
 

@@ -148,13 +148,17 @@ class LlmStepExecutor(IStepExecutor):
             "1) Use only the provided available_mcp_tools[].name values.\n"
             "2) Treat step.planned_tool_ref as the preferred starting tool, but you may combine "
             "multiple MCP tools when the step requires orchestration.\n"
-            "3) Apply real changes through MCP tool calls and workspace writes only.\n"
-            "4) If you need local file contents as true file attachments, first return ONLY "
+            "3) You may call MCP tools repeatedly to search, inspect, branch, and iterate before "
+            "returning the final result.\n"
+            "4) If step.planned_tool_ref is orchestra.ai_review, focus on analysis and return the "
+            "review result with set_result.\n"
+            "5) Apply real changes through MCP tool calls and workspace writes only.\n"
+            "6) If you need local file contents as true file attachments, first return ONLY "
             "request_file_attachments actions.\n"
-            "5) request_file_attachments paths must come from workspace_file_index.\n"
-            "6) write_file path must stay inside workspace_root.\n"
-            "7) Use set_result when the final result should differ from the last tool result.\n"
-            "8) Keep output valid JSON with no commentary."
+            "7) request_file_attachments paths must come from workspace_file_index.\n"
+            "8) write_file path must stay inside workspace_root.\n"
+            "9) Use set_result when the final result should differ from the last tool result.\n"
+            "10) Keep output valid JSON with no commentary."
         )
 
     @staticmethod

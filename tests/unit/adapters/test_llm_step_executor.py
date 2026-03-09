@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -107,12 +108,7 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
             client.requests[0].messages[1].content
         )
     finally:
-        for child in sorted(base.rglob("*"), reverse=True):
-            if child.is_file():
-                child.unlink()
-            elif child.is_dir():
-                child.rmdir()
-        base.rmdir()
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
@@ -172,12 +168,7 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
         assert client.requests[0].messages[1].attachments == ()
         assert client.requests[1].messages[1].attachments[0].path == str(requested_file.resolve())
     finally:
-        for child in sorted(base.rglob("*"), reverse=True):
-            if child.is_file():
-                child.unlink()
-            elif child.is_dir():
-                child.rmdir()
-        base.rmdir()
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
@@ -223,4 +214,57 @@ def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
                 mcp_client=FakeMcpClient(),
             )
     finally:
-        base.rmdir()
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_supports_ai_review_steps() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        source_file = base / "program.py"
+        source_file.write_text("print('hello')", encoding="utf-8")
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "set_result",
+                      "result": {
+                        "status": "reviewed",
+                        "summary": "No critical issues"
+                      }
+                    }
+                  ]
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-review",
+            name="Review program",
+            version=1,
+            objective="Review a program file",
+        )
+        step = Step(
+            step_id="review_program",
+            name="Review program",
+            description="Review the source file and summarize issues.",
+            tool_ref="orchestra.ai_review",
+            resolved_input={"llm_reference_files": ["program.py"]},
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {"status": "reviewed", "summary": "No critical issues"}
+        assert "orchestra.ai_review" in client.requests[0].messages[1].content
+        assert client.requests[0].messages[1].attachments[0].path == str(source_file.resolve())
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

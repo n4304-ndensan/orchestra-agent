@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,55 @@ class WorkspaceFileService:
             )
         return entries
 
+    def find_entries(
+        self,
+        pattern: str,
+        path: str = ".",
+        *,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        include_dirs: bool = False,
+        max_results: int = 200,
+    ) -> dict[str, Any]:
+        if max_results <= 0:
+            raise ValueError("max_results must be greater than zero.")
+        target_dir = self._resolve_within_workspace(path)
+        if not target_dir.exists():
+            raise FileNotFoundError(f"Directory '{path}' does not exist.")
+        if not target_dir.is_dir():
+            raise NotADirectoryError(f"Path '{path}' is not a directory.")
+
+        matches: list[dict[str, Any]] = []
+        truncated = False
+        for candidate in sorted(target_dir.rglob("*")):
+            if candidate.is_dir() and not include_dirs:
+                continue
+            relative_candidate = candidate.relative_to(self._workspace_root).as_posix()
+            if not self._matches_text(
+                text=relative_candidate,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+                regex=regex,
+            ):
+                continue
+            matches.append(
+                {
+                    "name": candidate.name,
+                    "path": relative_candidate,
+                    "is_dir": candidate.is_dir(),
+                }
+            )
+            if len(matches) >= max_results:
+                truncated = True
+                break
+
+        return {
+            "path": target_dir.relative_to(self._workspace_root).as_posix(),
+            "pattern": pattern,
+            "matches": matches,
+            "truncated": truncated,
+        }
+
     def read_text(self, relative_path: str, encoding: str = "utf-8") -> str:
         target = self._resolve_within_workspace(relative_path)
         if not target.exists():
@@ -53,6 +103,53 @@ class WorkspaceFileService:
                 f"Limit is {self._max_read_bytes} bytes."
             )
         return target.read_text(encoding=encoding)
+
+    def grep_text(
+        self,
+        pattern: str,
+        path: str = ".",
+        *,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        file_glob: str | None = None,
+        max_results: int = 200,
+        encoding: str = "utf-8",
+    ) -> dict[str, Any]:
+        if max_results <= 0:
+            raise ValueError("max_results must be greater than zero.")
+        target_dir = self._resolve_within_workspace(path)
+        if not target_dir.exists():
+            raise FileNotFoundError(f"Directory '{path}' does not exist.")
+        if not target_dir.is_dir():
+            raise NotADirectoryError(f"Path '{path}' is not a directory.")
+
+        matches: list[dict[str, Any]] = []
+        truncated = False
+        candidate_iter = target_dir.rglob(file_glob) if file_glob else target_dir.rglob("*")
+        for candidate in sorted(candidate_iter):
+            if not candidate.is_file():
+                continue
+            grep_matches = self._grep_file(
+                file_path=candidate,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+                regex=regex,
+                max_results=max_results - len(matches),
+                encoding=encoding,
+            )
+            if not grep_matches:
+                continue
+            matches.extend(grep_matches)
+            if len(matches) >= max_results:
+                truncated = True
+                break
+
+        return {
+            "path": target_dir.relative_to(self._workspace_root).as_posix(),
+            "pattern": pattern,
+            "matches": matches,
+            "truncated": truncated,
+        }
 
     def write_text(
         self,
@@ -83,3 +180,57 @@ class WorkspaceFileService:
                 f"Path '{relative_path}' is outside workspace root '{self._workspace_root}'."
             ) from exc
         return resolved
+
+    def _grep_file(
+        self,
+        file_path: Path,
+        pattern: str,
+        *,
+        case_sensitive: bool,
+        regex: bool,
+        max_results: int,
+        encoding: str,
+    ) -> list[dict[str, Any]]:
+        if max_results <= 0:
+            return []
+        if file_path.stat().st_size > self._max_read_bytes:
+            return []
+        try:
+            content = file_path.read_text(encoding=encoding)
+        except UnicodeDecodeError:
+            return []
+
+        matches: list[dict[str, Any]] = []
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if not self._matches_text(
+                text=line,
+                pattern=pattern,
+                case_sensitive=case_sensitive,
+                regex=regex,
+            ):
+                continue
+            matches.append(
+                {
+                    "path": file_path.relative_to(self._workspace_root).as_posix(),
+                    "line_number": line_number,
+                    "line": line,
+                }
+            )
+            if len(matches) >= max_results:
+                break
+        return matches
+
+    @staticmethod
+    def _matches_text(
+        text: str,
+        pattern: str,
+        *,
+        case_sensitive: bool,
+        regex: bool,
+    ) -> bool:
+        if regex:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            return re.search(pattern, text, flags=flags) is not None
+        if case_sensitive:
+            return pattern in text
+        return pattern.lower() in text.lower()

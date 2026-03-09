@@ -23,7 +23,7 @@ class StructuredLlmPlanner(IPlanner):
     Builds a full StepPlan from a structured LLM response.
     """
 
-    _builtin_tool_refs = {"orchestra.llm_execute"}
+    _builtin_tool_refs = {"orchestra.ai_review", "orchestra.llm_execute"}
 
     def __init__(
         self,
@@ -131,10 +131,14 @@ class StructuredLlmPlanner(IPlanner):
             "3) tool_ref must be one of the provided available_tools[].name values.\n"
             "4) Use orchestra.llm_execute when the step needs local workspace edits or "
             "multi-tool orchestration.\n"
-            "5) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
+            "5) Use orchestra.ai_review when the step is primarily judgment, review, or "
+            "analysis over files and messages.\n"
+            "6) Do not model first-class if/for syntax in the plan. Put branching, iteration, and "
+            "search loops inside orchestra.llm_execute or orchestra.ai_review.\n"
+            "7) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
             "backup is sufficient.\n"
-            "6) Respect feedback_history as the latest correction source.\n"
-            "7) Keep output valid JSON and do not add commentary."
+            "8) Respect feedback_history as the latest correction source.\n"
+            "9) Keep output valid JSON and do not add commentary."
         )
 
     @staticmethod

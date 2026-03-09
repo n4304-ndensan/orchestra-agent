@@ -11,8 +11,8 @@
   - 実行前に step plan を生成し、承認・監査・復旧を伴って実行する
   - AI が plan と各 step の実行制御を担当し、MCP runtime が実作業を実行する
 - 現在の同梱 MCP role:
-  - `files`: workspace の一覧、読込、書込
-  - `excel`: `.xlsx` の読込、集計、sheet 作成、保存
+  - `files`: workspace の一覧、再帰検索、grep、読込、書込
+  - `excel`: `.xlsx` の読込、特定セル参照、grep、画像列挙/抽出、集計、sheet 作成、保存
 - 拡張方向:
   - runtime は複数 MCP endpoint を束ねられるので、将来的に browser / database / SaaS / shell などの role を横に足していける
 
@@ -27,6 +27,7 @@
   - 各 step の解釈
   - 実行中に必要な MCP tool 選択
   - 実行中に必要なファイル添付の要求
+  - `orchestra.ai_review` によるレビュー、比較、妥当性判断
 - MCP がやること:
   - 実ファイル操作
   - Excel 読み書き
@@ -96,6 +97,12 @@ flowchart TD
 
 ## 5. planner の現状
 
+- `StepPlan` 自体はまだ静的 DAG
+  - first-class な `if` / `for` 構文は未導入
+  - 承認、resume、snapshot、監査の整合性を壊さないため、現時点では runtime loop を plan
+    schema に直接持たせていない
+  - 分岐や反復が必要な探索型作業は `orchestra.llm_execute` か `orchestra.ai_review` の中で
+    AI が MCP tool を反復呼び出しして処理する
 - `llm.provider = none`
   - 決定論 planner を使う
   - 現状この draft planner は Excel 寄り
@@ -103,6 +110,7 @@ flowchart TD
   - LLM が available MCP tools を見て full plan を構築
   - step 実行時も LLM が tool catalog を見て MCP runtime をオーケストレーション
   - Excel 以外の role を増やしたときも、このモードが汎用 orchestration の中心になる
+  - judgement-heavy な step には `orchestra.ai_review` を使える
 - `planner_mode = augmented`
   - 決定論 draft に対して安全な patch だけ許可
 
@@ -112,14 +120,20 @@ flowchart TD
 
 - `orchestra-mcp-files`
   - `fs_list_entries`
+  - `fs_find_entries`
+  - `fs_grep_text`
   - `fs_read_text`
   - `fs_write_text`
 - `orchestra-mcp-excel`
   - `excel.open_file`
   - `excel.read_sheet`
+  - `excel.read_cells`
+  - `excel.grep_cells`
   - `excel.calculate_sum`
   - `excel.create_sheet`
   - `excel.write_cells`
+  - `excel.list_images`
+  - `excel.extract_image`
   - `excel.save_file`
 - `orchestra-api`
   - 上記 MCP 群をまとめて 1 つの control plane として扱う

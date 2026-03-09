@@ -121,3 +121,45 @@ def test_structured_llm_planner_falls_back_when_response_is_invalid() -> None:
 
     assert plan.steps[0].step_id == "open_file"
     assert planner.last_warning is not None
+
+
+def test_structured_llm_planner_accepts_ai_review_builtin_tool() -> None:
+    workflow = Workflow(
+        workflow_id="wf-2",
+        name="Review program",
+        version=1,
+        objective="Review the referenced program and summarize risks.",
+    )
+    client = FakeLlmClient(
+        [
+            """
+            {
+              "steps": [
+                {
+                  "step_id": "review_program",
+                  "name": "Review program",
+                  "description": "Read the target file and review it",
+                  "tool_ref": "orchestra.ai_review",
+                  "resolved_input": {
+                    "message": "Review this file and summarize issues."
+                  },
+                  "depends_on": [],
+                  "risk_level": "MEDIUM",
+                  "requires_approval": true,
+                  "run": true,
+                  "skip": false,
+                  "backup_scope": "NONE"
+                }
+              ]
+            }
+            """
+        ]
+    )
+    planner = StructuredLlmPlanner(
+        llm_client=client,
+        available_tools_supplier=lambda: ["fs_read_text"],
+    )
+
+    plan = planner.compile_step_plan(workflow)
+
+    assert plan.steps[0].tool_ref == "orchestra.ai_review"

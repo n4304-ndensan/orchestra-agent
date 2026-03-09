@@ -12,6 +12,7 @@ Workflow-driven orchestration control plane for AI-assisted automation via HTTP 
 - workflow creation
 - MCP-backed tool discovery and execution
 - multi-file references for LLM requests
+- practical file and Excel inspection tools for real operations
 - step-plan compilation
 - policy evaluation and approval gating
 - pre-step snapshots for comparison and rollback
@@ -100,6 +101,42 @@ re-query the LLM with those files attached to the message.
 
 The default deterministic draft planner is still optimized for the bundled Excel profile. When a
 live LLM planner is enabled, planning becomes tool-aware across all discovered MCP servers.
+
+Control-flow note:
+
+- `StepPlan` is still a static DAG. First-class `if` / `for` syntax is not modeled yet.
+- Branching, iterative search, and ambiguous procedural work should run inside
+  `orchestra.llm_execute` or `orchestra.ai_review`.
+- In that mode, the AI can loop over MCP tools, inspect intermediate results, and decide the next
+  call while the runtime still enforces approval, snapshots, audit logs, and recovery.
+
+Practical bundled MCP tools:
+
+- `files`
+  - `fs_list_entries`
+  - `fs_find_entries`
+  - `fs_grep_text`
+  - `fs_read_text`
+  - `fs_write_text`
+- `excel`
+  - `excel.open_file`
+  - `excel.read_sheet`
+  - `excel.read_cells`
+  - `excel.grep_cells`
+  - `excel.calculate_sum`
+  - `excel.create_sheet`
+  - `excel.write_cells`
+  - `excel.list_images`
+  - `excel.extract_image`
+  - `excel.save_file`
+- built-in AI tools
+  - `orchestra.llm_execute`
+  - `orchestra.ai_review`
+
+`orchestra.ai_review` is for steps that need human-brain-style judgment such as review, comparison,
+triage, or "read these files and tell me whether this procedure/program is acceptable". The model
+can inspect attached files and workspace files, produce a structured result, and later steps can use
+that result to decide what to write or execute through MCP.
 
 ## Quick start
 
@@ -226,6 +263,11 @@ uv run orchestra-agent --config .\orchestra-agent.toml `
 ```
 
 これを受けて executor は対象ファイルを添付し、同じ step を再度 LLM に問い合わせます。
+
+`orchestra.ai_review` も同じ attachment / workspace index の仕組みを使えますが、主目的は
+分析結果の返却です。たとえば「フォルダ内を調べ、Excel の特定セルに書かれた手順と program
+file を照合して問題ないかレビューする」のような task は、AI が MCP tool を使って探索し、
+最後に review result を返す step として実行できます。
 
 ### Control plane API examples
 

@@ -83,6 +83,46 @@ def _register_file_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
         return {"path": path, "content": file_service.read_text(path, encoding=encoding)}
 
     @mcp.tool()  # type: ignore[untyped-decorator]
+    def fs_find_entries(
+        pattern: str,
+        path: str = ".",
+        case_sensitive: bool = False,
+        regex: bool = False,
+        include_dirs: bool = False,
+        max_results: int = 200,
+    ) -> dict[str, Any]:
+        """Search file and directory names under the workspace."""
+        return file_service.find_entries(
+            pattern=pattern,
+            path=path,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            include_dirs=include_dirs,
+            max_results=max_results,
+        )
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def fs_grep_text(
+        pattern: str,
+        path: str = ".",
+        case_sensitive: bool = False,
+        regex: bool = False,
+        file_glob: str | None = None,
+        max_results: int = 200,
+        encoding: str = "utf-8",
+    ) -> dict[str, Any]:
+        """Search text content recursively and return line matches."""
+        return file_service.grep_text(
+            pattern=pattern,
+            path=path,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            file_glob=file_glob,
+            max_results=max_results,
+            encoding=encoding,
+        )
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
     def fs_write_text(
         path: str,
         content: str,
@@ -102,6 +142,12 @@ def _register_server_ping(mcp: Any) -> None:
 
 
 def _register_excel_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:
+    _register_excel_read_tools(mcp, excel_service)
+    _register_excel_write_tools(mcp, excel_service)
+    _register_excel_media_tools(mcp, excel_service)
+
+
+def _register_excel_read_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:
     @mcp.tool()  # type: ignore[untyped-decorator]
     def excel_open_file(file: str) -> dict[str, Any]:
         """Open an Excel workbook and return sheet metadata."""
@@ -111,6 +157,32 @@ def _register_excel_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> Non
     def excel_read_sheet(file: str, sheet: str) -> dict[str, Any]:
         """Read worksheet rows as dictionaries keyed by column letters."""
         return excel_service.read_sheet(file, sheet)
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def excel_read_cells(file: str, sheet: str, cells: list[str]) -> dict[str, Any]:
+        """Read specific worksheet cells."""
+        return excel_service.read_cells(file, sheet, cells)
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def excel_grep_cells(
+        file: str,
+        pattern: str,
+        sheet: str | None = None,
+        case_sensitive: bool = False,
+        regex: bool = False,
+        exact: bool = False,
+        max_results: int = 100,
+    ) -> dict[str, Any]:
+        """Search workbook cell values like grep."""
+        return excel_service.grep_cells(
+            file,
+            pattern,
+            sheet=sheet,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            exact=exact,
+            max_results=max_results,
+        )
 
     @mcp.tool()  # type: ignore[untyped-decorator]
     def excel_calculate_sum(
@@ -123,6 +195,8 @@ def _register_excel_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> Non
         """Calculate a numeric sum for a worksheet column."""
         return excel_service.calculate_sum(file, sheet, column, start_row, end_row)
 
+
+def _register_excel_write_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:
     @mcp.tool()  # type: ignore[untyped-decorator]
     def excel_create_sheet(file: str, sheet: str, overwrite: bool = False) -> dict[str, Any]:
         """Create a worksheet inside an existing workbook."""
@@ -132,6 +206,30 @@ def _register_excel_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> Non
     def excel_write_cells(file: str, sheet: str, cells: dict[str, Any]) -> dict[str, Any]:
         """Write cell values into a worksheet."""
         return excel_service.write_cells(file, sheet, cells)
+
+
+def _register_excel_media_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def excel_list_images(file: str, sheet: str | None = None) -> dict[str, Any]:
+        """List embedded worksheet images and their anchor cells."""
+        return excel_service.list_images(file, sheet=sheet)
+
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def excel_extract_image(
+        file: str,
+        sheet: str,
+        image_index: int,
+        output: str | None = None,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Extract a specific embedded image into the workspace."""
+        return excel_service.extract_image(
+            file,
+            sheet=sheet,
+            image_index=image_index,
+            output=output,
+            overwrite=overwrite,
+        )
 
     @mcp.tool()  # type: ignore[untyped-decorator]
     def excel_save_file(file: str, output: str, overwrite: bool = True) -> dict[str, Any]:
