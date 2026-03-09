@@ -62,6 +62,7 @@ class StructuredLlmPlanner(IPlanner):
                                     "constraints": workflow.constraints,
                                     "success_criteria": workflow.success_criteria,
                                     "feedback_history": workflow.feedback_history,
+                                    "replan_context": self._replan_context_payload(workflow),
                                 },
                                 "available_tools": available_tool_catalog,
                             },
@@ -119,6 +120,17 @@ class StructuredLlmPlanner(IPlanner):
         return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
 
     @staticmethod
+    def _replan_context_payload(workflow: Workflow) -> dict[str, str] | None:
+        if workflow.replan_context is None:
+            return None
+        return {
+            "trigger": workflow.replan_context.trigger,
+            "change_summary": workflow.replan_context.change_summary,
+            "source_workflow_document": workflow.replan_context.source_workflow_document,
+            "source_step_plan_document": workflow.replan_context.source_step_plan_document,
+        }
+
+    @staticmethod
     def _system_prompt() -> str:
         return (
             "You are a workflow planner. Return ONLY JSON with this shape:\n"
@@ -135,10 +147,12 @@ class StructuredLlmPlanner(IPlanner):
             "analysis over files and messages.\n"
             "6) Do not model first-class if/for syntax in the plan. Put branching, iteration, and "
             "search loops inside orchestra.llm_execute or orchestra.ai_review.\n"
-            "7) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
+            "7) When workflow.replan_context is present, treat source_workflow_document as the "
+            "replan source document and change_summary as the required correction.\n"
+            "8) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
             "backup is sufficient.\n"
-            "8) Respect feedback_history as the latest correction source.\n"
-            "9) Keep output valid JSON and do not add commentary."
+            "9) Respect feedback_history as the latest correction source.\n"
+            "10) Keep output valid JSON and do not add commentary."
         )
 
     @staticmethod

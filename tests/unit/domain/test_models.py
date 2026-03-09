@@ -4,6 +4,7 @@ from orchestra_agent.domain import (
     DomainValidationError,
     ExecutionRecord,
     ExecutionStatus,
+    ReplanContext,
     Step,
     StepPlan,
     Workflow,
@@ -23,6 +24,29 @@ def test_workflow_with_feedback_increments_version() -> None:
     assert updated.version == 2
     assert updated.reference_files == ["docs/spec.pdf"]
     assert updated.feedback_history == ["Need a summary sheet"]
+
+
+def test_workflow_with_feedback_keeps_structured_replan_context() -> None:
+    workflow = Workflow(
+        workflow_id="wf-1",
+        name="Excel Summary",
+        version=1,
+        objective="Summarize sales column C",
+    )
+    replan_context = ReplanContext(
+        trigger="feedback",
+        change_summary="Replace the summary layout.",
+        source_workflow_document="<workflow />",
+        source_step_plan_document='{"steps":[]}',
+    )
+
+    updated = workflow.with_feedback(
+        "Replace the summary layout.",
+        replan_context=replan_context,
+    )
+
+    assert updated.version == 2
+    assert updated.replan_context == replan_context
 
 
 def test_step_rejects_run_and_skip_both_true() -> None:

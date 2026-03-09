@@ -66,8 +66,10 @@ class LlmStepProposalProvider(IStepProposalProvider):
             "1) Patch existing step_id only.\n"
             "2) Do NOT add or remove steps.\n"
             "3) Keep tool_ref within Excel tools only.\n"
-            "4) Respect workflow.feedback_history as the latest correction intent.\n"
-            "5) Keep output minimal and valid JSON."
+            "4) When workflow.replan_context is present, use source_workflow_document and "
+            "change_summary as the authoritative replan input.\n"
+            "5) Respect workflow.feedback_history as the latest correction intent.\n"
+            "6) Keep output minimal and valid JSON."
         )
         draft_payload = {
             "workflow": {
@@ -76,6 +78,7 @@ class LlmStepProposalProvider(IStepProposalProvider):
                 "constraints": workflow.constraints,
                 "success_criteria": workflow.success_criteria,
                 "feedback_history": workflow.feedback_history,
+                "replan_context": self._replan_context_payload(workflow),
             },
             "draft_step_plan": {
                 "step_plan_id": draft_plan.step_plan_id,
@@ -137,6 +140,17 @@ class LlmStepProposalProvider(IStepProposalProvider):
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
         return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
+
+    @staticmethod
+    def _replan_context_payload(workflow: Workflow) -> dict[str, str] | None:
+        if workflow.replan_context is None:
+            return None
+        return {
+            "trigger": workflow.replan_context.trigger,
+            "change_summary": workflow.replan_context.change_summary,
+            "source_workflow_document": workflow.replan_context.source_workflow_document,
+            "source_step_plan_document": workflow.replan_context.source_step_plan_document,
+        }
 
 
 class SafeAugmentedLlmPlanner(IPlanner):

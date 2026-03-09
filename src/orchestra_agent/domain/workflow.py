@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
+class ReplanContext:
+    trigger: str
+    change_summary: str
+    source_workflow_document: str
+    source_step_plan_document: str
+
+
+@dataclass(slots=True)
 class Workflow:
     workflow_id: str
     name: str
@@ -13,8 +21,13 @@ class Workflow:
     constraints: list[str] = field(default_factory=list)
     success_criteria: list[str] = field(default_factory=list)
     feedback_history: list[str] = field(default_factory=list)
+    replan_context: ReplanContext | None = None
 
-    def with_feedback(self, feedback: str) -> Workflow:
+    def with_feedback(
+        self,
+        feedback: str,
+        replan_context: ReplanContext | None = None,
+    ) -> Workflow:
         new_history = [*self.feedback_history, feedback]
         return Workflow(
             workflow_id=self.workflow_id,
@@ -25,4 +38,5 @@ class Workflow:
             constraints=[*self.constraints],
             success_criteria=[*self.success_criteria],
             feedback_history=new_history,
+            replan_context=replan_context,
         )

@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from xml.etree import ElementTree as ET
 
-from orchestra_agent.domain import AgentState, ApprovalStatus, Step, StepPlan, Workflow
+from orchestra_agent.domain import (
+    AgentState,
+    ApprovalStatus,
+    ReplanContext,
+    Step,
+    StepPlan,
+    Workflow,
+)
 from orchestra_agent.ports import (
     IAuditLogger,
     IPlanner,
@@ -77,6 +86,7 @@ class FailureHandler:
             replan_attempt=replan_attempt,
             event_type="replanned_step_plan",
             reason="Replanned after failure.",
+            trigger="failure",
         )
 
     def handle_feedback(
@@ -112,6 +122,7 @@ class FailureHandler:
             replan_attempt=replan_attempt,
             event_type="replanned_from_feedback",
             reason="Replanned after user feedback.",
+            trigger="feedback",
         )
 
     def _replan_with_feedback(
@@ -123,6 +134,7 @@ class FailureHandler:
         replan_attempt: int,
         event_type: str,
         reason: str,
+        trigger: str,
     ) -> RecoveryDecision:
         if replan_attempt >= self._max_replans:
             return RecoveryDecision(
@@ -133,7 +145,15 @@ class FailureHandler:
                 reason="Replan limit reached.",
             )
 
-        updated_workflow = workflow.with_feedback(feedback)
+        updated_workflow = workflow.with_feedback(
+            feedback,
+            replan_context=self._build_replan_context(
+                workflow=workflow,
+                previous_plan=previous_plan,
+                trigger=trigger,
+                change_summary=feedback,
+            ),
+        )
         if self._workflow_repository is not None:
             self._workflow_repository.save(updated_workflow)
 
@@ -174,3 +194,75 @@ class FailureHandler:
                 if isinstance(previous_value, str):
                     step.resolved_input[key] = previous_value
         return replanned
+
+    @staticmethod
+    def _build_replan_context(
+        workflow: Workflow,
+        previous_plan: StepPlan,
+        trigger: str,
+        change_summary: str,
+    ) -> ReplanContext:
+        return ReplanContext(
+            trigger=trigger,
+            change_summary=change_summary,
+            source_workflow_document=FailureHandler._serialize_workflow_document(workflow),
+            source_step_plan_document=FailureHandler._serialize_step_plan_document(previous_plan),
+        )
+
+    @staticmethod
+    def _serialize_workflow_document(workflow: Workflow) -> str:
+        root = ET.Element(
+            "workflow",
+            attrib={
+                "id": workflow.workflow_id,
+                "version": str(workflow.version),
+            },
+        )
+        ET.SubElement(root, "name").text = workflow.name
+        ET.SubElement(root, "objective").text = workflow.objective
+
+        reference_files = ET.SubElement(root, "reference_files")
+        for item in workflow.reference_files:
+            ET.SubElement(reference_files, "item").text = item
+
+        constraints = ET.SubElement(root, "constraints")
+        for item in workflow.constraints:
+            ET.SubElement(constraints, "item").text = item
+
+        success_criteria = ET.SubElement(root, "success_criteria")
+        for item in workflow.success_criteria:
+            ET.SubElement(success_criteria, "item").text = item
+
+        feedback_history = ET.SubElement(root, "feedback_history")
+        for item in workflow.feedback_history:
+            ET.SubElement(feedback_history, "item").text = item
+
+        return ET.tostring(root, encoding="unicode")
+
+    @staticmethod
+    def _serialize_step_plan_document(step_plan: StepPlan) -> str:
+        return json.dumps(
+            {
+                "step_plan_id": step_plan.step_plan_id,
+                "workflow_id": step_plan.workflow_id,
+                "version": step_plan.version,
+                "steps": [
+                    {
+                        "step_id": step.step_id,
+                        "name": step.name,
+                        "description": step.description,
+                        "tool_ref": step.tool_ref,
+                        "resolved_input": step.resolved_input,
+                        "depends_on": step.depends_on,
+                        "risk_level": step.risk_level.value,
+                        "requires_approval": step.requires_approval,
+                        "run": step.run,
+                        "skip": step.skip,
+                        "backup_scope": step.backup_scope.value,
+                    }
+                    for step in step_plan.steps
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+        )

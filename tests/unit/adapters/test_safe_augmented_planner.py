@@ -11,7 +11,7 @@ from orchestra_agent.adapters.planner import (
     LlmStepProposalProvider,
     SafeAugmentedLlmPlanner,
 )
-from orchestra_agent.domain.workflow import Workflow
+from orchestra_agent.domain.workflow import ReplanContext, Workflow
 from orchestra_agent.ports import ILlmClient, LlmGenerateRequest
 
 
@@ -120,3 +120,32 @@ def test_llm_step_proposal_provider_parses_response() -> None:
         assert client.last_request.messages[1].attachments[0].path == str(reference_file)
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_proposal_provider_includes_replan_context() -> None:
+    workflow = Workflow(
+        workflow_id="wf-1",
+        name="Excel summary",
+        version=2,
+        objective="sales.xlsxのC列を集計してsummary.xlsxへ",
+        feedback_history=["Need a revised export step."],
+        replan_context=ReplanContext(
+            trigger="feedback",
+            change_summary="Review the source workflow and patch the export step only.",
+            source_workflow_document="<workflow id=\"wf-1\" version=\"1\" />",
+            source_step_plan_document='{"step_plan_id":"sp-1"}',
+        ),
+    )
+    draft_plan = LlmPlanner().compile_step_plan(workflow)
+    client = FakeLlmClient(
+        response_text='{"steps":[{"step_id":"save_file","description":"Export the reviewed file"}]}'
+    )
+    provider = LlmStepProposalProvider(client)
+
+    provider.propose(workflow, draft_plan)
+
+    assert client.last_request is not None
+    request_body = client.last_request.messages[1].content
+    assert '"replan_context"' in request_body
+    assert '"trigger": "feedback"' in request_body
+    assert "<workflow id=\\\"wf-1\\\" version=\\\"1\\\" />" in request_body

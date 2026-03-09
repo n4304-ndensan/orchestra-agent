@@ -87,7 +87,8 @@ Execution behavior:
 - mandatory approval before every step execution
 - mandatory review approval after every step execution (approve or feedback)
 - pre-step snapshot before every executed step
-- failure/feedback pipeline: restore -> log -> workflow XML feedback update -> replan -> approval -> resume
+- failure/feedback pipeline: restore -> log -> workflow XML feedback update -> AI replan with
+  source workflow document + source step-plan document + correction summary -> approval -> resume
 - final completion locks workflow and step plan artifacts
 
 With a live LLM provider, step execution runs through an AI-controlled MCP runtime. The model
@@ -137,6 +138,15 @@ Practical bundled MCP tools:
 triage, or "read these files and tell me whether this procedure/program is acceptable". The model
 can inspect attached files and workspace files, produce a structured result, and later steps can use
 that result to decide what to write or execute through MCP.
+
+Replanning behavior:
+
+- When failure or human feedback triggers a replan, the runtime builds a structured `replan_context`.
+- That context contains the source workflow document, the source step-plan document, and the change
+  summary that must be applied.
+- `StructuredLlmPlanner` and `LlmStepProposalProvider` both forward that context to the model, so
+  the AI replans against the original document plus the requested correction instead of only reading
+  a flat feedback string.
 
 ## Quick start
 

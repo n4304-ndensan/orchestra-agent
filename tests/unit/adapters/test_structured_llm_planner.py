@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from orchestra_agent.adapters.planner import LlmPlanner, StructuredLlmPlanner
-from orchestra_agent.domain import Workflow
+from orchestra_agent.domain import ReplanContext, Workflow
 from orchestra_agent.ports import LlmGenerateRequest
 
 
@@ -163,3 +163,57 @@ def test_structured_llm_planner_accepts_ai_review_builtin_tool() -> None:
     plan = planner.compile_step_plan(workflow)
 
     assert plan.steps[0].tool_ref == "orchestra.ai_review"
+
+
+def test_structured_llm_planner_includes_replan_source_document() -> None:
+    workflow = Workflow(
+        workflow_id="wf-replan",
+        name="Replan workflow",
+        version=2,
+        objective="Update the procedure after review.",
+        feedback_history=["Prior correction"],
+        replan_context=ReplanContext(
+            trigger="feedback",
+            change_summary="Read the original workflow doc and replace the review step.",
+            source_workflow_document="<workflow id=\"wf-replan\" version=\"1\" />",
+            source_step_plan_document='{"step_plan_id":"sp-old","steps":[]}',
+        ),
+    )
+    client = FakeLlmClient(
+        [
+            """
+            {
+              "steps": [
+                {
+                  "step_id": "review_program",
+                  "name": "Review program",
+                  "description": "Read the target file and review it",
+                  "tool_ref": "orchestra.ai_review",
+                  "resolved_input": {
+                    "message": "Review this file and summarize issues."
+                  },
+                  "depends_on": [],
+                  "risk_level": "MEDIUM",
+                  "requires_approval": true,
+                  "run": true,
+                  "skip": false,
+                  "backup_scope": "NONE"
+                }
+              ]
+            }
+            """
+        ]
+    )
+    planner = StructuredLlmPlanner(
+        llm_client=client,
+        available_tools_supplier=lambda: ["fs_read_text"],
+    )
+
+    planner.compile_step_plan(workflow)
+
+    request_body = client.requests[0].messages[1].content
+    assert '"replan_context"' in request_body
+    assert '"change_summary": "Read the original workflow doc and replace the review step."' in (
+        request_body
+    )
+    assert "<workflow id=\\\"wf-replan\\\" version=\\\"1\\\" />" in request_body

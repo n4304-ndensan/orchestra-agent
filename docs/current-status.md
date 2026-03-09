@@ -87,6 +87,7 @@ flowchart TD
   - step 前承認
   - 実行後レビュー承認
   - feedback による replan
+  - replan 時は source workflow document と source step-plan document と修正要約を AI に渡す
 - safe execution
   - 全 step 実行前 snapshot
   - failure 時 restore
@@ -111,8 +112,10 @@ flowchart TD
   - step 実行時も LLM が tool catalog を見て MCP runtime をオーケストレーション
   - Excel 以外の role を増やしたときも、このモードが汎用 orchestration の中心になる
   - judgement-heavy な step には `orchestra.ai_review` を使える
+  - failure / feedback による再計画時も `replan_context` を受けて AI が再設計する
 - `planner_mode = augmented`
   - 決定論 draft に対して安全な patch だけ許可
+  - このモードでも AI proposal には `replan_context` が渡る
 
 ## 6. Docker / MCP 構成
 

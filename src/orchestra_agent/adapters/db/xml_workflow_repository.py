@@ -3,7 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from orchestra_agent.domain.workflow import Workflow
+from orchestra_agent.domain.workflow import ReplanContext, Workflow
 from orchestra_agent.ports.workflow_repository import IWorkflowRepository
 
 
@@ -107,6 +107,19 @@ class XmlWorkflowRepository(IWorkflowRepository):
         for item in workflow.feedback_history:
             ET.SubElement(feedback_history, "item").text = item
 
+        if workflow.replan_context is not None:
+            replan_context = ET.SubElement(root, "replan_context")
+            ET.SubElement(replan_context, "trigger").text = workflow.replan_context.trigger
+            ET.SubElement(replan_context, "change_summary").text = (
+                workflow.replan_context.change_summary
+            )
+            ET.SubElement(replan_context, "source_workflow_document").text = (
+                workflow.replan_context.source_workflow_document
+            )
+            ET.SubElement(replan_context, "source_step_plan_document").text = (
+                workflow.replan_context.source_step_plan_document
+            )
+
         tree = ET.ElementTree(root)
         path.parent.mkdir(parents=True, exist_ok=True)
         tree.write(path, encoding="utf-8", xml_declaration=True)
@@ -129,6 +142,7 @@ class XmlWorkflowRepository(IWorkflowRepository):
         constraints = XmlWorkflowRepository._items(root, "constraints")
         success_criteria = XmlWorkflowRepository._items(root, "success_criteria")
         feedback_history = XmlWorkflowRepository._items(root, "feedback_history")
+        replan_context = XmlWorkflowRepository._replan_context(root)
 
         return Workflow(
             workflow_id=workflow_id,
@@ -139,6 +153,7 @@ class XmlWorkflowRepository(IWorkflowRepository):
             constraints=constraints,
             success_criteria=success_criteria,
             feedback_history=feedback_history,
+            replan_context=replan_context,
         )
 
     @staticmethod
@@ -163,3 +178,35 @@ class XmlWorkflowRepository(IWorkflowRepository):
         if parent is None:
             return []
         return [item.text or "" for item in parent.findall("item")]
+
+    @staticmethod
+    def _replan_context(root: ET.Element) -> ReplanContext | None:
+        replan_context = root.find("replan_context")
+        if replan_context is None:
+            return None
+
+        trigger = XmlWorkflowRepository._element_text(replan_context, "trigger")
+        change_summary = XmlWorkflowRepository._element_text(replan_context, "change_summary")
+        source_workflow_document = XmlWorkflowRepository._element_text(
+            replan_context,
+            "source_workflow_document",
+        )
+        source_step_plan_document = XmlWorkflowRepository._element_text(
+            replan_context,
+            "source_step_plan_document",
+        )
+        if not any(
+            (
+                trigger,
+                change_summary,
+                source_workflow_document,
+                source_step_plan_document,
+            )
+        ):
+            return None
+        return ReplanContext(
+            trigger=trigger,
+            change_summary=change_summary,
+            source_workflow_document=source_workflow_document,
+            source_step_plan_document=source_step_plan_document,
+        )

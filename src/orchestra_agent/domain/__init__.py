@@ -4,7 +4,7 @@ from .errors import DomainValidationError
 from .execution_record import ExecutionRecord
 from .step import Step
 from .step_plan import StepPlan
-from .workflow import Workflow
+from .workflow import ReplanContext, Workflow
 
 __all__ = [
     "AgentState",
@@ -14,6 +14,7 @@ __all__ = [
     "ExecutionRecord",
     "ExecutionStatus",
     "RiskLevel",
+    "ReplanContext",
     "Step",
     "StepPlan",
     "Workflow",

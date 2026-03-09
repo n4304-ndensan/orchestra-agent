@@ -5,7 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from orchestra_agent.adapters.db import FilesystemStepPlanRepository, XmlWorkflowRepository
-from orchestra_agent.domain import BackupScope, Step, StepPlan, Workflow
+from orchestra_agent.domain import BackupScope, ReplanContext, Step, StepPlan, Workflow
 
 
 def test_xml_workflow_repository_save_and_load() -> None:
@@ -36,6 +36,21 @@ def test_xml_workflow_repository_save_and_load() -> None:
         assert loaded_v2 is not None
         assert loaded_v2.feedback_history[-1] == "write_summary failed once"
         assert (base / "workflow" / "wf-xml" / "feedback" / "feedback_v2.txt").is_file()
+
+        replan_context = ReplanContext(
+            trigger="feedback",
+            change_summary="Review the original workflow and replace the save step.",
+            source_workflow_document="<workflow id=\"wf-xml\" version=\"2\" />",
+            source_step_plan_document='{"step_plan_id":"sp-1"}',
+        )
+        replanned = updated.with_feedback(
+            "Replace the save step after review.",
+            replan_context=replan_context,
+        )
+        repo.save(replanned)
+        loaded_v3 = repo.get("wf-xml", version=3)
+        assert loaded_v3 is not None
+        assert loaded_v3.replan_context == replan_context
 
         repo.lock_workflow("wf-xml")
         assert repo.is_locked("wf-xml") is True
