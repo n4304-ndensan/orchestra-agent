@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
+from orchestra_agent.domain.serialization import step_plan_to_dict, workflow_to_dict
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
@@ -72,33 +73,8 @@ class LlmStepProposalProvider(IStepProposalProvider):
             "6) Keep output minimal and valid JSON."
         )
         draft_payload = {
-            "workflow": {
-                "objective": workflow.objective,
-                "reference_files": workflow.reference_files,
-                "constraints": workflow.constraints,
-                "success_criteria": workflow.success_criteria,
-                "feedback_history": workflow.feedback_history,
-                "replan_context": self._replan_context_payload(workflow),
-            },
-            "draft_step_plan": {
-                "step_plan_id": draft_plan.step_plan_id,
-                "steps": [
-                    {
-                        "step_id": step.step_id,
-                        "name": step.name,
-                        "description": step.description,
-                        "tool_ref": step.tool_ref,
-                        "resolved_input": step.resolved_input,
-                        "depends_on": step.depends_on,
-                        "risk_level": step.risk_level.value,
-                        "requires_approval": step.requires_approval,
-                        "run": step.run,
-                        "skip": step.skip,
-                        "backup_scope": step.backup_scope.value,
-                    }
-                    for step in draft_plan.steps
-                ],
-            },
+            "workflow": workflow_to_dict(workflow),
+            "draft_step_plan": step_plan_to_dict(draft_plan),
         }
         user_prompt = json.dumps(draft_payload, ensure_ascii=False, indent=2)
 
@@ -140,17 +116,6 @@ class LlmStepProposalProvider(IStepProposalProvider):
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
         return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
-
-    @staticmethod
-    def _replan_context_payload(workflow: Workflow) -> dict[str, str] | None:
-        if workflow.replan_context is None:
-            return None
-        return {
-            "trigger": workflow.replan_context.trigger,
-            "change_summary": workflow.replan_context.change_summary,
-            "source_workflow_document": workflow.replan_context.source_workflow_document,
-            "source_step_plan_document": workflow.replan_context.source_step_plan_document,
-        }
 
 
 class SafeAugmentedLlmPlanner(IPlanner):

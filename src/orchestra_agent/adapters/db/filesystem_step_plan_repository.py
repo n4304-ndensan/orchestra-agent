@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
+from orchestra_agent.domain.serialization import step_plan_to_dict
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.ports.step_plan_repository import IStepPlanRepository
@@ -37,7 +38,7 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
             )
         plan_dir.mkdir(parents=True, exist_ok=True)
 
-        payload = self._serialize(step_plan)
+        payload = step_plan_to_dict(step_plan)
         json_text = json.dumps(payload, ensure_ascii=False, indent=2)
         version_json = plan_dir / f"step_plan_v{step_plan.version}.json"
         latest_json = plan_dir / "step_plan_latest.json"
@@ -83,30 +84,6 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
 
     def _plan_dir(self, workflow_id: str, step_plan_id: str) -> Path:
         return self._root_dir / workflow_id / step_plan_id
-
-    @staticmethod
-    def _serialize(step_plan: StepPlan) -> dict[str, Any]:
-        return {
-            "step_plan_id": step_plan.step_plan_id,
-            "workflow_id": step_plan.workflow_id,
-            "version": step_plan.version,
-            "steps": [
-                {
-                    "step_id": step.step_id,
-                    "name": step.name,
-                    "description": step.description,
-                    "tool_ref": step.tool_ref,
-                    "resolved_input": step.resolved_input,
-                    "depends_on": step.depends_on,
-                    "risk_level": step.risk_level.value,
-                    "requires_approval": step.requires_approval,
-                    "run": step.run,
-                    "skip": step.skip,
-                    "backup_scope": step.backup_scope.value,
-                }
-                for step in step_plan.steps
-            ],
-        }
 
     @staticmethod
     def _write_xml(step_plan: StepPlan, path: Path) -> None:

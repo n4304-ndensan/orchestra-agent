@@ -196,15 +196,15 @@ class PlanExecutor:
                     }
                 )
 
-                self._set_post_step_review_pending(
+                if self._set_post_step_review_pending(
                     workflow=workflow,
                     step_plan=step_plan,
                     step=step,
                     state=state,
                     snapshot_ref=snapshot_ref,
                     result=result,
-                )
-                return "paused", None
+                ):
+                    return "paused", None
             except Exception as exc:  # noqa: BLE001
                 error_message = str(exc)
                 record.mark_failed(error_message)
@@ -239,6 +239,10 @@ class PlanExecutor:
         step_plan: StepPlan,
         state: AgentState,
     ) -> bool:
+        if not step_plan.requires_runtime_approval:
+            self._clear_approval_context(state)
+            return True
+
         approved_version = state.metadata.get(self._approved_plan_version_key)
         if approved_version == step_plan.version:
             return True
@@ -328,6 +332,9 @@ class PlanExecutor:
         step: Step,
         state: AgentState,
     ) -> bool:
+        if not step.requires_runtime_approval:
+            return True
+
         context = self._approval_context(state)
         if (
             context is None
@@ -418,7 +425,10 @@ class PlanExecutor:
         state: AgentState,
         snapshot_ref: str | None,
         result: dict[str, Any],
-    ) -> None:
+    ) -> bool:
+        if not step.requires_runtime_approval:
+            return False
+
         message = (
             f"step '{step.step_id}' が完了しました。成果物を確認し、問題なければ approve、"
             "修正が必要なら feedback を送ってください。"
@@ -445,6 +455,7 @@ class PlanExecutor:
                 "message": message,
             }
         )
+        return True
 
     def _set_approval_context(
         self,

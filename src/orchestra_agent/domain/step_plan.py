@@ -64,3 +64,7 @@ class StepPlan:
         mapped = self.step_map()
         return [mapped[step_id] for step_id in self.topologically_sorted_ids()]
 
+    @property
+    def requires_runtime_approval(self) -> bool:
+        return any(step.requires_runtime_approval for step in self.steps)
+

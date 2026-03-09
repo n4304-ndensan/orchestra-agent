@@ -131,6 +131,8 @@ def test_excel_workflow_end_to_end_with_approval_resume() -> None:
                 step.resolved_input["file"] = str(source_file)
             if "output" in step.resolved_input:
                 step.resolved_input["output"] = str(output_file)
+            if step.step_id == "create_summary_sheet":
+                step.requires_approval = True
         step_plan_repo.save(latest_plan)
 
         approval = approval_api.approve_step_plan(step_plan_id=plan_response["step_plan_id"])
@@ -226,6 +228,8 @@ def test_excel_workflow_feedback_restores_backup_and_replans() -> None:
                 step.resolved_input["file"] = str(source_file)
             if "output" in step.resolved_input:
                 step.resolved_input["output"] = str(output_file)
+            if step.step_id == "create_summary_sheet":
+                step.requires_approval = True
         step_plan_repo.save(latest_plan)
         _ = approval_api.approve_step_plan(step_plan_id=plan_response["step_plan_id"])
 
@@ -321,6 +325,8 @@ def test_excel_workflow_supports_multiple_repair_rounds() -> None:
                 step.resolved_input["file"] = str(source_file)
             if "output" in step.resolved_input:
                 step.resolved_input["output"] = str(output_file)
+            if step.step_id == "create_summary_sheet":
+                step.requires_approval = True
         step_plan_repo.save(latest_plan)
         _ = approval_api.approve_step_plan(step_plan_id=plan_response["step_plan_id"])
 

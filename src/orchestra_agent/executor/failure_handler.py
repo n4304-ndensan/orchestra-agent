@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from xml.etree import ElementTree as ET
 
 from orchestra_agent.domain import (
     AgentState,
@@ -12,6 +10,7 @@ from orchestra_agent.domain import (
     StepPlan,
     Workflow,
 )
+from orchestra_agent.domain.serialization import step_plan_to_json_text, workflow_to_xml_text
 from orchestra_agent.ports import (
     IAuditLogger,
     IPlanner,
@@ -205,64 +204,6 @@ class FailureHandler:
         return ReplanContext(
             trigger=trigger,
             change_summary=change_summary,
-            source_workflow_document=FailureHandler._serialize_workflow_document(workflow),
-            source_step_plan_document=FailureHandler._serialize_step_plan_document(previous_plan),
-        )
-
-    @staticmethod
-    def _serialize_workflow_document(workflow: Workflow) -> str:
-        root = ET.Element(
-            "workflow",
-            attrib={
-                "id": workflow.workflow_id,
-                "version": str(workflow.version),
-            },
-        )
-        ET.SubElement(root, "name").text = workflow.name
-        ET.SubElement(root, "objective").text = workflow.objective
-
-        reference_files = ET.SubElement(root, "reference_files")
-        for item in workflow.reference_files:
-            ET.SubElement(reference_files, "item").text = item
-
-        constraints = ET.SubElement(root, "constraints")
-        for item in workflow.constraints:
-            ET.SubElement(constraints, "item").text = item
-
-        success_criteria = ET.SubElement(root, "success_criteria")
-        for item in workflow.success_criteria:
-            ET.SubElement(success_criteria, "item").text = item
-
-        feedback_history = ET.SubElement(root, "feedback_history")
-        for item in workflow.feedback_history:
-            ET.SubElement(feedback_history, "item").text = item
-
-        return ET.tostring(root, encoding="unicode")
-
-    @staticmethod
-    def _serialize_step_plan_document(step_plan: StepPlan) -> str:
-        return json.dumps(
-            {
-                "step_plan_id": step_plan.step_plan_id,
-                "workflow_id": step_plan.workflow_id,
-                "version": step_plan.version,
-                "steps": [
-                    {
-                        "step_id": step.step_id,
-                        "name": step.name,
-                        "description": step.description,
-                        "tool_ref": step.tool_ref,
-                        "resolved_input": step.resolved_input,
-                        "depends_on": step.depends_on,
-                        "risk_level": step.risk_level.value,
-                        "requires_approval": step.requires_approval,
-                        "run": step.run,
-                        "skip": step.skip,
-                        "backup_scope": step.backup_scope.value,
-                    }
-                    for step in step_plan.steps
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
+            source_workflow_document=workflow_to_xml_text(workflow),
+            source_step_plan_document=step_plan_to_json_text(previous_plan),
         )

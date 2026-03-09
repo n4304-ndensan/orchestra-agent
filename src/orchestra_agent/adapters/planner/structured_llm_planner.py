@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
+from orchestra_agent.domain.serialization import workflow_to_dict
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
@@ -54,16 +55,7 @@ class StructuredLlmPlanner(IPlanner):
                         role="user",
                         content=json.dumps(
                             {
-                                "workflow": {
-                                    "workflow_id": workflow.workflow_id,
-                                    "name": workflow.name,
-                                    "objective": workflow.objective,
-                                    "reference_files": workflow.reference_files,
-                                    "constraints": workflow.constraints,
-                                    "success_criteria": workflow.success_criteria,
-                                    "feedback_history": workflow.feedback_history,
-                                    "replan_context": self._replan_context_payload(workflow),
-                                },
+                                "workflow": workflow_to_dict(workflow),
                                 "available_tools": available_tool_catalog,
                             },
                             ensure_ascii=False,
@@ -118,17 +110,6 @@ class StructuredLlmPlanner(IPlanner):
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
         return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
-
-    @staticmethod
-    def _replan_context_payload(workflow: Workflow) -> dict[str, str] | None:
-        if workflow.replan_context is None:
-            return None
-        return {
-            "trigger": workflow.replan_context.trigger,
-            "change_summary": workflow.replan_context.change_summary,
-            "source_workflow_document": workflow.replan_context.source_workflow_document,
-            "source_step_plan_document": workflow.replan_context.source_step_plan_document,
-        }
 
     @staticmethod
     def _system_prompt() -> str:

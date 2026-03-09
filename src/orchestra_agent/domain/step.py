@@ -33,3 +33,10 @@ class Step:
     def is_executable(self) -> bool:
         return self.run and not self.skip
 
+    @property
+    def requires_runtime_approval(self) -> bool:
+        return self.requires_approval or self.risk_level in (
+            RiskLevel.HIGH,
+            RiskLevel.CRITICAL,
+        )
+

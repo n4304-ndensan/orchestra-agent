@@ -84,8 +84,8 @@ flowchart TD
   - `.orchestra_state/runs/`
   - `.orchestra_state/audit/`
 - human-in-the-loop
-  - step 前承認
-  - 実行後レビュー承認
+  - approval-gated plan のときだけ plan 承認
+  - high risk または `requires_approval=true` step だけ pre/post 承認
   - feedback による replan
   - replan 時は source workflow document と source step-plan document と修正要約を AI に渡す
 - safe execution
@@ -150,3 +150,9 @@ flowchart TD
 - `ruff`: pass
 - `mypy`: pass
 - `pytest`: split MCP 構成を含めて pass
+
+## 8. 保守性の改善
+
+- `Workflow` / `StepPlan` の文書化は domain serialization helper に集約
+- planner / replan / repository / API 間の重複 JSON / XML 組み立てを削減
+- `requires_approval` と runtime approval の挙動を一致させ、拡張時に意味がぶれないように整理

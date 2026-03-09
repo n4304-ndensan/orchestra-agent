@@ -84,8 +84,8 @@ Execution behavior:
 
 - dependency-aware (DAG)
 - skip/run flags respected
-- mandatory approval before every step execution
-- mandatory review approval after every step execution (approve or feedback)
+- plan approval only when the plan contains approval-gated steps
+- pre/post step approval only for high-risk steps or steps with `requires_approval=true`
 - pre-step snapshot before every executed step
 - failure/feedback pipeline: restore -> log -> workflow XML feedback update -> AI replan with
   source workflow document + source step-plan document + correction summary -> approval -> resume
@@ -147,6 +147,14 @@ Replanning behavior:
 - `StructuredLlmPlanner` and `LlmStepProposalProvider` both forward that context to the model, so
   the AI replans against the original document plus the requested correction instead of only reading
   a flat feedback string.
+
+Refactoring direction:
+
+- `Workflow` / `StepPlan` document rendering is now centralized in pure domain serialization helpers.
+- Planner payload generation and replan document generation reuse that shared serialization instead
+  of duplicating XML / JSON assembly in multiple adapters.
+- Runtime approval rules are now aligned with `risk_level` and `requires_approval`, so the step
+  schema matches actual execution semantics.
 
 ## Quick start
 

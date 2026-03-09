@@ -5,6 +5,7 @@ from orchestra_agent.domain import (
     ExecutionRecord,
     ExecutionStatus,
     ReplanContext,
+    RiskLevel,
     Step,
     StepPlan,
     Workflow,
@@ -65,6 +66,33 @@ def test_step_rejects_run_and_skip_both_true() -> None:
         raise AssertionError("Expected DomainValidationError")
 
 
+def test_step_requires_runtime_approval_for_high_risk_or_explicit_flag() -> None:
+    high_risk = Step(
+        step_id="high-risk",
+        name="high-risk",
+        description="high-risk",
+        tool_ref="excel.save_file",
+        risk_level=RiskLevel.HIGH,
+    )
+    explicit = Step(
+        step_id="explicit",
+        name="explicit",
+        description="explicit",
+        tool_ref="excel.write_cells",
+        requires_approval=True,
+    )
+    normal = Step(
+        step_id="normal",
+        name="normal",
+        description="normal",
+        tool_ref="excel.read_sheet",
+    )
+
+    assert high_risk.requires_runtime_approval is True
+    assert explicit.requires_runtime_approval is True
+    assert normal.requires_runtime_approval is False
+
+
 def test_step_plan_topological_order() -> None:
     step_open = Step(
         step_id="open_file",
@@ -95,6 +123,38 @@ def test_step_plan_topological_order() -> None:
     )
 
     assert plan.topologically_sorted_ids() == ["open_file", "read_sheet", "calculate_totals"]
+
+
+def test_step_plan_requires_runtime_approval_when_any_step_requires_it() -> None:
+    low_step = Step(
+        step_id="read",
+        name="Read",
+        description="Read workbook",
+        tool_ref="excel.read_sheet",
+    )
+    high_step = Step(
+        step_id="save",
+        name="Save",
+        description="Save workbook",
+        tool_ref="excel.save_file",
+        risk_level=RiskLevel.HIGH,
+    )
+
+    low_plan = StepPlan(
+        step_plan_id="sp-low",
+        workflow_id="wf-1",
+        version=1,
+        steps=[low_step],
+    )
+    high_plan = StepPlan(
+        step_plan_id="sp-high",
+        workflow_id="wf-1",
+        version=1,
+        steps=[low_step, high_step],
+    )
+
+    assert low_plan.requires_runtime_approval is False
+    assert high_plan.requires_runtime_approval is True
 
 
 def test_step_plan_rejects_cycle() -> None:

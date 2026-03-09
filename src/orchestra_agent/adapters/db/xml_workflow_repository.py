@@ -3,6 +3,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from orchestra_agent.domain.serialization import workflow_to_xml_root
 from orchestra_agent.domain.workflow import ReplanContext, Workflow
 from orchestra_agent.ports.workflow_repository import IWorkflowRepository
 
@@ -81,46 +82,7 @@ class XmlWorkflowRepository(IWorkflowRepository):
 
     @staticmethod
     def _write_workflow_xml(workflow: Workflow, path: Path) -> None:
-        root = ET.Element(
-            "workflow",
-            attrib={
-                "id": workflow.workflow_id,
-                "version": str(workflow.version),
-            },
-        )
-        ET.SubElement(root, "name").text = workflow.name
-        ET.SubElement(root, "objective").text = workflow.objective
-
-        reference_files = ET.SubElement(root, "reference_files")
-        for item in workflow.reference_files:
-            ET.SubElement(reference_files, "item").text = item
-
-        constraints = ET.SubElement(root, "constraints")
-        for item in workflow.constraints:
-            ET.SubElement(constraints, "item").text = item
-
-        success_criteria = ET.SubElement(root, "success_criteria")
-        for item in workflow.success_criteria:
-            ET.SubElement(success_criteria, "item").text = item
-
-        feedback_history = ET.SubElement(root, "feedback_history")
-        for item in workflow.feedback_history:
-            ET.SubElement(feedback_history, "item").text = item
-
-        if workflow.replan_context is not None:
-            replan_context = ET.SubElement(root, "replan_context")
-            ET.SubElement(replan_context, "trigger").text = workflow.replan_context.trigger
-            ET.SubElement(replan_context, "change_summary").text = (
-                workflow.replan_context.change_summary
-            )
-            ET.SubElement(replan_context, "source_workflow_document").text = (
-                workflow.replan_context.source_workflow_document
-            )
-            ET.SubElement(replan_context, "source_step_plan_document").text = (
-                workflow.replan_context.source_step_plan_document
-            )
-
-        tree = ET.ElementTree(root)
+        tree = ET.ElementTree(workflow_to_xml_root(workflow))
         path.parent.mkdir(parents=True, exist_ok=True)
         tree.write(path, encoding="utf-8", xml_declaration=True)
 

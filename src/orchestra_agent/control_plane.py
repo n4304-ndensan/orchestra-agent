@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from orchestra_agent.config import AppConfig, load_app_config, resolve_config_path
+from orchestra_agent.domain.serialization import step_plan_to_dict, workflow_to_dict
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
 from orchestra_agent.runtime import AppRuntime, RuntimeConfig, build_runtime
@@ -369,40 +370,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serialize_workflow(workflow: Workflow) -> dict[str, Any]:
-    return {
-        "workflow_id": workflow.workflow_id,
-        "name": workflow.name,
-        "version": workflow.version,
-        "objective": workflow.objective,
-        "reference_files": workflow.reference_files,
-        "constraints": workflow.constraints,
-        "success_criteria": workflow.success_criteria,
-        "feedback_history": workflow.feedback_history,
-    }
+    return workflow_to_dict(workflow)
 
 
 def _serialize_step_plan(step_plan: StepPlan) -> dict[str, Any]:
-    return {
-        "step_plan_id": step_plan.step_plan_id,
-        "workflow_id": step_plan.workflow_id,
-        "version": step_plan.version,
-        "steps": [
-            {
-                "step_id": step.step_id,
-                "name": step.name,
-                "description": step.description,
-                "tool_ref": step.tool_ref,
-                "resolved_input": step.resolved_input,
-                "depends_on": step.depends_on,
-                "risk_level": step.risk_level.value,
-                "requires_approval": step.requires_approval,
-                "run": step.run,
-                "skip": step.skip,
-                "backup_scope": step.backup_scope.value,
-            }
-            for step in step_plan.steps
-        ],
-    }
+    return step_plan_to_dict(step_plan)
 
 
 def _path_segments(path: str) -> list[str]:
