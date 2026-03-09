@@ -12,6 +12,11 @@ dependencies = [
     "typer>=0.24.1",
 ]
 
+[project.scripts]
+orchestra-agent = "orchestra_agent.cli:main"
+orchestra-agent-api = "orchestra_agent.control_plane:main"
+orchestra-agent-mcp = "orchestra_agent.mcp_server.__main__:main"
+
 [project.optional-dependencies]
 mcp-server = [
     "mcp>=1.0.0",

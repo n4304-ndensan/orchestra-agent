@@ -1,0 +1,41 @@
+[workspace]
+root = "./workspace"
+workflow_root = "workflow"
+plan_root = "plan"
+snapshots_dir = ".orchestra_snapshots"
+state_root = ".orchestra_state/runs"
+audit_root = ".orchestra_state/audit"
+
+[mcp]
+name = "orchestra-workspace"
+transport = "http"
+host = "0.0.0.0"
+port = 8000
+path = "/mcp"
+endpoint = "http://orchestra-mcp:8000/mcp"
+
+[api]
+host = "0.0.0.0"
+port = 9000
+
+[llm]
+provider = "none"
+planner_mode = "deterministic"
+openai_model = "gpt-4.1-mini"
+openai_api_key_env = "OPENAI_API_KEY"
+openai_base_url = "https://api.openai.com"
+openai_timeout = 60.0
+google_model = "gemini-2.5-flash"
+google_api_key_env = "GEMINI_API_KEY"
+google_base_url = "https://generativelanguage.googleapis.com"
+google_timeout = 60.0
+temperature = 0.0
+max_tokens = 1200
+
+[runtime]
+workflow_name = "Excel Automation Workflow"
+run_id = "run-cli"
+auto_approve = true
+max_resume = 50
+print_plan = true
+repair_max_attempts = 3

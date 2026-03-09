@@ -18,15 +18,23 @@ from orchestra_agent.executor.failure_handler import (
     FailureHandler,
     RecoveryDecision,
 )
-from orchestra_agent.ports import IAgentStateStore, IAuditLogger, IMcpClient, ISnapshotManager
+from orchestra_agent.ports import (
+    IAgentStateStore,
+    IAuditLogger,
+    IMcpClient,
+    ISnapshotManager,
+    IStepExecutor,
+)
 
 type ResolvedValue = dict[str, Any] | list[Any] | str | int | float | bool | None
-type ApprovalStage = Literal["PRE_STEP", "POST_STEP"]
+type ApprovalStage = Literal["PLAN", "PRE_STEP", "POST_STEP"]
 
 
 class PlanExecutor:
     _template_pattern = re.compile(r"\{\{\s*([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\s*\}\}")
     _approval_context_key = "approval_context"
+    _approved_plan_version_key = "approved_step_plan_version"
+    _repair_attempt_key = "repair_attempts"
 
     def __init__(
         self,
@@ -35,15 +43,16 @@ class PlanExecutor:
         snapshot_manager: ISnapshotManager,
         audit_logger: IAuditLogger,
         failure_handler: FailureHandler,
+        step_executor: IStepExecutor | None = None,
     ) -> None:
         self._mcp_client = mcp_client
         self._state_store = state_store
         self._snapshot_manager = snapshot_manager
         self._audit_logger = audit_logger
         self._failure_handler = failure_handler
+        self._step_executor = step_executor
 
     def execute(self, workflow: Workflow, step_plan: StepPlan, state: AgentState) -> AgentState:
-        replan_attempt = 0
         active_workflow = workflow
         active_plan = step_plan
 
@@ -57,7 +66,7 @@ class PlanExecutor:
 
             decision = self._failure_handler.handle_failure(
                 context=context,
-                replan_attempt=replan_attempt,
+                replan_attempt=self._repair_attempts(state),
             )
             if not decision.should_replan:
                 state.approval_status = ApprovalStatus.REJECTED
@@ -66,7 +75,10 @@ class PlanExecutor:
                 return state
 
             self._apply_recovery_decision(state, decision)
-            replan_attempt += 1
+            assert decision.workflow is not None
+            assert decision.step_plan is not None
+            active_workflow = decision.workflow
+            active_plan = decision.step_plan
 
             if decision.approval_status == ApprovalStatus.PENDING:
                 return state
@@ -123,6 +135,9 @@ class PlanExecutor:
     def _execute_single_plan(
         self, workflow: Workflow, step_plan: StepPlan, state: AgentState
     ) -> tuple[str, FailureContext | None]:
+        if not self._ensure_plan_approval(workflow, step_plan, state):
+            return "paused", None
+
         if not self._resolve_pending_post_step_review(workflow, step_plan, state):
             return "paused", None
 
@@ -150,7 +165,12 @@ class PlanExecutor:
 
             try:
                 resolved_input = self._resolve_step_input(step.resolved_input, step_results)
-                result = self._mcp_client.call_tool(step.tool_ref, resolved_input)
+                result = self._execute_step(
+                    workflow=workflow,
+                    step=step,
+                    resolved_input=resolved_input,
+                    step_results=step_results,
+                )
                 record.mark_success(result=result)
                 step_results[step.step_id] = result
                 self._append_record(state, record)
@@ -200,6 +220,50 @@ class PlanExecutor:
             }
         )
         return "completed", None
+
+    def _ensure_plan_approval(
+        self,
+        workflow: Workflow,
+        step_plan: StepPlan,
+        state: AgentState,
+    ) -> bool:
+        approved_version = state.metadata.get(self._approved_plan_version_key)
+        if approved_version == step_plan.version:
+            return True
+
+        context = self._approval_context(state)
+        if (
+            context is None
+            or context.get("stage") != "PLAN"
+            or context.get("step_plan_version") != step_plan.version
+        ):
+            if state.approval_status == ApprovalStatus.APPROVED:
+                state.metadata[self._approved_plan_version_key] = step_plan.version
+                self._clear_approval_context(state)
+                self._state_store.save(state)
+                return True
+            self._set_plan_approval_pending(workflow, step_plan, state)
+            return False
+
+        if state.approval_status != ApprovalStatus.APPROVED:
+            state.current_step_id = None
+            state.approval_status = ApprovalStatus.PENDING
+            self._state_store.save(state)
+            return False
+
+        state.metadata[self._approved_plan_version_key] = step_plan.version
+        self._clear_approval_context(state)
+        self._state_store.save(state)
+        self._audit_logger.record(
+            {
+                "event_type": "plan_review_approved",
+                "run_id": state.run_id,
+                "workflow_id": workflow.workflow_id,
+                "step_plan_id": step_plan.step_plan_id,
+                "step_plan_version": step_plan.version,
+            }
+        )
+        return True
 
     def _resolve_pending_post_step_review(
         self,
@@ -270,6 +334,37 @@ class PlanExecutor:
 
         self._clear_approval_context(state)
         return True
+
+    def _set_plan_approval_pending(
+        self,
+        workflow: Workflow,
+        step_plan: StepPlan,
+        state: AgentState,
+    ) -> None:
+        message = (
+            f"step plan v{step_plan.version} を実行します。workflow={workflow.workflow_id} / "
+            "内容を確認し、実行してよければ approve してください。"
+        )
+        self._set_approval_context(
+            state=state,
+            stage="PLAN",
+            step_plan_version=step_plan.version,
+            step_id="__plan__",
+            message=message,
+        )
+        state.current_step_id = None
+        state.approval_status = ApprovalStatus.PENDING
+        self._state_store.save(state)
+        self._audit_logger.record(
+            {
+                "event_type": "plan_review_wait",
+                "run_id": state.run_id,
+                "workflow_id": workflow.workflow_id,
+                "step_plan_id": step_plan.step_plan_id,
+                "step_plan_version": step_plan.version,
+                "message": message,
+            }
+        )
 
     def _set_pre_step_approval_pending(
         self,
@@ -370,6 +465,8 @@ class PlanExecutor:
         state.step_plan_version = decision.step_plan.version
         state.approval_status = decision.approval_status
         state.current_step_id = None
+        state.metadata[self._repair_attempt_key] = self._repair_attempts(state) + 1
+        state.metadata.pop(self._approved_plan_version_key, None)
         self._clear_approval_context(state)
         self._state_store.save(state)
 
@@ -383,8 +480,32 @@ class PlanExecutor:
         return None
 
     def _append_record(self, state: AgentState, record: ExecutionRecord) -> None:
+        if record.snapshot_ref is not None and record.snapshot_ref not in state.snapshot_refs:
+            state.snapshot_refs.append(record.snapshot_ref)
         state.append_execution(record)
         self._state_store.save(state)
+
+    def _execute_step(
+        self,
+        workflow: Workflow,
+        step: Step,
+        resolved_input: dict[str, Any],
+        step_results: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        if step.tool_ref == "orchestra.llm_execute":
+            if self._step_executor is None:
+                raise RuntimeError("LLM step executor is not configured.")
+            return self._step_executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=resolved_input,
+                step_results=step_results,
+                mcp_client=self._mcp_client,
+            )
+
+        if step.tool_ref.startswith("orchestra."):
+            raise RuntimeError(f"Unsupported orchestra tool_ref '{step.tool_ref}'.")
+        return self._mcp_client.call_tool(step.tool_ref, resolved_input)
 
     @staticmethod
     def _collect_step_results(state: AgentState) -> dict[str, dict[str, Any]]:
@@ -489,3 +610,9 @@ class PlanExecutor:
         if isinstance(value, list):
             return value
         raise TypeError(f"Unsupported resolved value type: {type(value).__name__}")
+
+    def _repair_attempts(self, state: AgentState) -> int:
+        raw_value = state.metadata.get(self._repair_attempt_key, 0)
+        if isinstance(raw_value, int):
+            return raw_value
+        return 0

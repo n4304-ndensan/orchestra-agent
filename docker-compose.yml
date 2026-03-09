@@ -1,0 +1,76 @@
+services:
+  orchestra-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestra-mcp
+    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml"]
+    working_dir: /workspace/project
+    volumes:
+      - ./:/workspace/project
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/health'))['status'])",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  orchestra-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestra-api
+    command: ["orchestra-agent-api", "--config", "/workspace/project/orchestra-agent.toml"]
+    working_dir: /workspace/project
+    volumes:
+      - ./:/workspace/project
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    ports:
+      - "9000:9000"
+    restart: unless-stopped
+    depends_on:
+      orchestra-mcp:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:9000/health'))['status'])",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  orchestra-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestra-cli
+    profiles: ["cli"]
+    entrypoint: ["orchestra-agent", "--config", "/workspace/project/orchestra-agent.toml"]
+    working_dir: /workspace/project
+    volumes:
+      - ./:/workspace/project
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    depends_on:
+      orchestra-mcp:
+        condition: service_healthy

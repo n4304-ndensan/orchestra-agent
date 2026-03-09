@@ -78,6 +78,26 @@ class RunAPI:
         self._lock_completed_artifacts(resumed)
         return self._serialize_state(resumed)
 
+    def respond_to_approval(
+        self,
+        run_id: str,
+        approve: bool = True,
+        feedback: str | None = None,
+    ) -> dict[str, Any]:
+        state = self._state_store.load(run_id)
+        if state is None:
+            raise KeyError(f"Run '{run_id}' not found.")
+
+        if feedback is not None:
+            return self.submit_feedback(run_id=run_id, feedback=feedback)
+
+        if approve:
+            return self.resume_run(run_id=run_id, approved=True)
+
+        state.approval_status = ApprovalStatus.REJECTED
+        self._state_store.save(state)
+        return self._serialize_state(state)
+
     def submit_feedback(self, run_id: str, feedback: str) -> dict[str, Any]:
         state = self._state_store.load(run_id)
         if state is None:

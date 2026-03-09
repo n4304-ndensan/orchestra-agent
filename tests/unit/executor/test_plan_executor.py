@@ -153,6 +153,7 @@ def test_plan_executor_runs_full_excel_flow() -> None:
 
         statuses = [record.status.value for record in state.execution_history]
         assert statuses == ["SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"]
+        assert len(state.snapshot_refs) == 3
         assert (base / "summary.xlsx").is_file()
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -169,6 +170,20 @@ def test_plan_executor_requires_pre_and_post_approval_for_each_step() -> None:
             step_plan=plan,
             run_id="run-approval",
             approval_status=ApprovalStatus.PENDING,
+        )
+        assert paused_pre.approval_status == ApprovalStatus.PENDING
+        assert paused_pre.current_step_id is None
+        assert len(paused_pre.execution_history) == 0
+        plan_context = paused_pre.metadata.get("approval_context")
+        assert isinstance(plan_context, dict)
+        assert plan_context.get("stage") == "PLAN"
+        assert plan_context.get("step_id") == "__plan__"
+
+        paused_pre = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-approval",
+            approval_status=ApprovalStatus.APPROVED,
         )
         assert paused_pre.approval_status == ApprovalStatus.PENDING
         assert paused_pre.current_step_id == "open_file"

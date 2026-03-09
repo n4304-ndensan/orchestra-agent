@@ -1,6 +1,6 @@
 # orchestra-agent Current Status
 
-この資料は、`orchestra-agent` の現状実装を「作業フロー」と「できること/未対応」で整理したものです。
+この資料は、`orchestra-agent` の現状実装を「作業フロー」と「できること/運用上の前提」で整理したものです。
 
 ## 1. End-to-End 作業フロー
 
@@ -69,12 +69,28 @@ flowchart TD
 ## 3. 現状できること
 
 - 1コマンド実行（CLI）
-  - `uv run python main.py "sales.xlsxのC列を集計してsummary.xlsxへ"`
+  - `uv run orchestra-agent "sales.xlsxのC列を集計してsummary.xlsxへ"`
+- 実 Excel `.xlsx` を扱う内蔵 HTTP JSON-RPC MCP サーバ
+  - `uv run --extra mcp-server orchestra-agent-mcp --workspace . --transport http`
+- HTTP control plane API
+  - `POST /workflows`
+  - `POST /workflows/{workflow_id}/plans`
+  - `POST /runs`
+  - `POST /runs/{run_id}/approval`
+  - `GET /runs/{run_id}`
+- 単一 TOML config での設定管理
+  - `--config .\orchestra-agent.toml`
+  - API key だけは環境変数
+- Docker Compose 起動
+  - `docker compose up --build`
 - workflowをXMLとして保存/再利用
   - `--workflow-id` で既存workflow指定
   - `--workflow-xml` でXMLインポート実行
 - workflow単位でplanをファイル保存
   - `plan/<workflow_id>/<step_plan_id>/...`
+- run state / audit の永続化
+  - `.orchestra_state/runs/<run_id>.json`
+  - `.orchestra_state/audit/events.ndjson`
 - Excel向け StepPlan の自動生成
 - DAG順実行、依存解決、テンプレート展開
 - 承認ゲート（自動承認/待機/再開）
@@ -93,12 +109,13 @@ flowchart TD
 - パッチ適用後も `StepPlan` ドメイン検証（DAG/依存/型）を通す
 - 不正提案は自動で破棄し、ベースプランへフォールバック
 
-## 5. 現状の制約
+## 5. 運用上の前提
 
-- HTTP APIサーバ (`POST /workflows` など) は未公開
-  - 現状は Python API + CLI
-- `PostgresAgentStateStore` は現在 in-memory 実装
-- MCP実環境への完全E2Eは、外部MCPサーバ接続設定が必要
+- Excel 実行には `openpyxl` を含む optional extra が必要
+  - `uv run --extra mcp-server ...`
+- Docker 実行には Docker daemon が起動している必要がある
+- 標準 planner は Excel 集計ユースケースに最適化された安全側のドラフトを生成する
+- 外部 MCP サーバを使う場合は `--mcp-endpoint` で JSON-RPC 互換 endpoint を指定する
 
 ## 6. 品質状態
 

@@ -2,54 +2,31 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestra_agent.adapters import (
-    DefaultPolicyEngine,
-    FilesystemSnapshotManager,
-    FilesystemStepPlanRepository,
-    InMemoryAuditLogger,
-    JsonFileStepProposalProvider,
-    JsonRpcMcpClient,
-    LlmPlanner,
-    LlmStepProposalProvider,
-    MockExcelMcpClient,
-    OpenAILlmClient,
-    PostgresAgentStateStore,
-    SafeAugmentedLlmPlanner,
-    XmlWorkflowRepository,
-)
-from orchestra_agent.adapters.planner import IStepProposalProvider
-from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
-from orchestra_agent.application.use_cases import (
-    ApproveStepPlanUseCase,
-    CompileStepPlanUseCase,
-    CreateWorkflowUseCase,
-    ExecutePlanUseCase,
-)
+from orchestra_agent.adapters import FilesystemStepPlanRepository
+from orchestra_agent.api import RunAPI
+from orchestra_agent.config import AppConfig, load_app_config, resolve_config_path
 from orchestra_agent.domain.step_plan import StepPlan
-from orchestra_agent.executor import FailureHandler, PlanExecutor
+from orchestra_agent.runtime import (
+    AppRuntime,
+    RuntimeConfig,
+    build_runtime,
+    resolve_file_arg,
+    resolve_path,
+)
 
 
-@dataclass
-class CliRuntime:
-    workflow_api: WorkflowAPI
-    approval_api: ApprovalAPI
-    run_api: RunAPI
-    workflow_repo: XmlWorkflowRepository
-    step_plan_repo: FilesystemStepPlanRepository
-    planner: SafeAugmentedLlmPlanner
-    mcp_client: JsonRpcMcpClient | MockExcelMcpClient
-    llm_client: OpenAILlmClient | None
-    using_mock: bool
-
-
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
+    defaults = config or AppConfig()
     parser = argparse.ArgumentParser(
         description="Run orchestra-agent Excel workflow from a single prompt."
+    )
+    parser.add_argument(
+        "--config",
+        default=str(config.source_path) if config and config.source_path is not None else None,
+        help="Path to orchestra-agent TOML config file.",
     )
     parser.add_argument(
         "objective",
@@ -62,200 +39,143 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to workflow XML file to import and execute",
     )
-    parser.add_argument("--name", default="Excel Automation Workflow", help="Workflow display name")
-    parser.add_argument("--run-id", default="run-cli", help="Run identifier")
-    parser.add_argument("--workspace", default=".", help="Workspace root for relative file paths")
+    parser.add_argument(
+        "--name",
+        default=defaults.runtime.workflow_name,
+        help="Workflow display name",
+    )
+    parser.add_argument("--run-id", default=defaults.runtime.run_id, help="Run identifier")
+    parser.add_argument(
+        "--workspace",
+        default=defaults.workspace.root,
+        help="Workspace root for relative file paths",
+    )
     parser.add_argument(
         "--workflow-root",
-        default="workflow",
+        default=defaults.workspace.workflow_root,
         help="Workflow storage root directory",
     )
-    parser.add_argument("--plan-root", default="plan", help="StepPlan storage root directory")
+    parser.add_argument(
+        "--plan-root",
+        default=defaults.workspace.plan_root,
+        help="StepPlan storage root directory",
+    )
     parser.add_argument(
         "--snapshots-dir",
-        default=".orchestra_snapshots",
+        default=defaults.workspace.snapshots_dir,
         help="Directory to store filesystem snapshots",
     )
-    parser.add_argument("--mcp-endpoint", default=None, help="JSON-RPC MCP endpoint URL")
+    parser.add_argument(
+        "--state-root",
+        default=defaults.workspace.state_root,
+        help="Directory to store persistent run state JSON files",
+    )
+    parser.add_argument(
+        "--audit-root",
+        default=defaults.workspace.audit_root,
+        help="Directory to store persistent audit events",
+    )
+    parser.add_argument(
+        "--mcp-endpoint",
+        default=defaults.mcp.endpoint,
+        help="JSON-RPC MCP endpoint URL",
+    )
     parser.add_argument(
         "--llm-provider",
-        choices=["none", "file", "openai"],
-        default="none",
+        choices=["none", "file", "openai", "google"],
+        default=defaults.llm.provider,
         help="LLM proposal source for planner augmentation",
     )
     parser.add_argument(
         "--llm-proposal-file",
-        default=None,
+        default=defaults.llm.proposal_file,
         help="JSON patch file path when --llm-provider file",
     )
     parser.add_argument(
         "--llm-openai-model",
-        default="gpt-4.1-mini",
+        default=defaults.llm.openai_model,
         help="OpenAI model name when --llm-provider openai",
     )
     parser.add_argument(
         "--llm-openai-api-key-env",
-        default="OPENAI_API_KEY",
+        default=defaults.llm.openai_api_key_env,
         help="Environment variable containing OpenAI API key",
     )
     parser.add_argument(
         "--llm-openai-base-url",
-        default="https://api.openai.com",
+        default=defaults.llm.openai_base_url,
         help="OpenAI API base URL",
     )
     parser.add_argument(
         "--llm-openai-timeout",
         type=float,
-        default=60.0,
+        default=defaults.llm.openai_timeout,
         help="OpenAI request timeout seconds",
+    )
+    parser.add_argument(
+        "--llm-google-model",
+        default=defaults.llm.google_model,
+        help="Google Gemini model name when --llm-provider google",
+    )
+    parser.add_argument(
+        "--llm-google-api-key-env",
+        default=defaults.llm.google_api_key_env,
+        help="Primary environment variable containing Google Gemini API key",
+    )
+    parser.add_argument(
+        "--llm-google-base-url",
+        default=defaults.llm.google_base_url,
+        help="Google Gemini Developer API base URL",
+    )
+    parser.add_argument(
+        "--llm-google-timeout",
+        type=float,
+        default=defaults.llm.google_timeout,
+        help="Google Gemini request timeout seconds",
+    )
+    parser.add_argument(
+        "--llm-planner-mode",
+        choices=["deterministic", "augmented", "full"],
+        default=defaults.llm.planner_mode,
+        help="Planner mode override. Defaults to full for live LLMs, augmented for file patches.",
     )
     parser.add_argument(
         "--llm-temperature",
         type=float,
-        default=0.0,
+        default=defaults.llm.temperature,
         help="Sampling temperature used for live LLM proposal",
     )
     parser.add_argument(
         "--llm-max-tokens",
         type=int,
-        default=1200,
+        default=defaults.llm.max_tokens,
         help="Max tokens for live LLM proposal response",
     )
     parser.add_argument(
         "--auto-approve",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=defaults.runtime.auto_approve,
         help="Automatically approve and resume pending approvals",
     )
     parser.add_argument(
         "--max-resume",
         type=int,
-        default=50,
+        default=defaults.runtime.max_resume,
         help="Maximum auto-resume attempts when approval becomes pending",
+    )
+    parser.add_argument(
+        "--repair-max-attempts",
+        type=int,
+        default=defaults.runtime.repair_max_attempts,
+        help="Maximum failure/feedback-driven replans before the run is rejected",
     )
     parser.add_argument(
         "--print-plan",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=defaults.runtime.print_plan,
         help="Print generated step plan summary",
     )
     return parser
-
-
-def _resolve_path(value: str, workspace: Path) -> str:
-    path = Path(value)
-    if path.is_absolute():
-        return str(path)
-    return str((workspace / path).resolve())
-
-
-def _resolve_file_arg(value: str, workspace: Path) -> Path:
-    raw = Path(value)
-    if raw.is_absolute():
-        return raw
-    if raw.exists():
-        return raw.resolve()
-    return (workspace / raw).resolve()
-
-
-def _build_llm_provider(
-    args: argparse.Namespace,
-    workspace: Path,
-) -> tuple[IStepProposalProvider | None, OpenAILlmClient | None]:
-    if args.llm_provider == "none":
-        return None, None
-
-    if args.llm_provider == "file":
-        if args.llm_proposal_file is None:
-            raise ValueError("--llm-proposal-file is required when --llm-provider file.")
-        proposal_path = _resolve_file_arg(args.llm_proposal_file, workspace)
-        return JsonFileStepProposalProvider(proposal_path), None
-
-    api_key = os.getenv(args.llm_openai_api_key_env)
-    if api_key is None or not api_key.strip():
-        raise ValueError(
-            f"Environment variable '{args.llm_openai_api_key_env}' is required for OpenAI LLM."
-        )
-    llm_client = OpenAILlmClient(
-        api_key=api_key,
-        model=args.llm_openai_model,
-        base_url=args.llm_openai_base_url,
-        timeout_seconds=args.llm_openai_timeout,
-    )
-    provider = LlmStepProposalProvider(
-        llm_client=llm_client,
-        temperature=args.llm_temperature,
-        max_tokens=args.llm_max_tokens,
-    )
-    return provider, llm_client
-
-
-def _build_runtime(
-    args: argparse.Namespace,
-    workspace: Path,
-    snapshots_dir: Path,
-    workflow_root: Path,
-    plan_root: Path,
-) -> CliRuntime:
-    workflow_repo = XmlWorkflowRepository(workflow_root)
-    step_plan_repo = FilesystemStepPlanRepository(plan_root)
-    state_store = PostgresAgentStateStore()
-    audit_logger = InMemoryAuditLogger()
-    base_planner = LlmPlanner()
-
-    proposal_provider, llm_client = _build_llm_provider(args, workspace)
-    planner = SafeAugmentedLlmPlanner(
-        base_planner=base_planner,
-        proposal_provider=proposal_provider,
-    )
-    policy_engine = DefaultPolicyEngine()
-    snapshot_manager = FilesystemSnapshotManager(snapshots_dir, workspace_root=workspace)
-
-    endpoint = args.mcp_endpoint
-    if isinstance(endpoint, str) and not endpoint.strip():
-        endpoint = None
-    using_mock = endpoint is None
-    if using_mock:
-        mcp_client: JsonRpcMcpClient | MockExcelMcpClient = MockExcelMcpClient()
-    else:
-        assert endpoint is not None
-        mcp_client = JsonRpcMcpClient(endpoint=endpoint)
-
-    compile_uc = CompileStepPlanUseCase(planner, policy_engine, step_plan_repo, audit_logger)
-    create_workflow_uc = CreateWorkflowUseCase(workflow_repo, audit_logger)
-    approve_uc = ApproveStepPlanUseCase(step_plan_repo, audit_logger)
-    failure_handler = FailureHandler(
-        snapshot_manager=snapshot_manager,
-        planner=planner,
-        policy_engine=policy_engine,
-        step_plan_repository=step_plan_repo,
-        audit_logger=audit_logger,
-        workflow_repository=workflow_repo,
-    )
-    executor = PlanExecutor(
-        mcp_client=mcp_client,
-        state_store=state_store,
-        snapshot_manager=snapshot_manager,
-        audit_logger=audit_logger,
-        failure_handler=failure_handler,
-    )
-    execute_uc = ExecutePlanUseCase(executor, state_store, audit_logger)
-
-    workflow_api = WorkflowAPI(create_workflow_uc, compile_uc, workflow_repo)
-    approval_api = ApprovalAPI(approve_uc, step_plan_repo)
-    run_api = RunAPI(execute_uc, workflow_repo, step_plan_repo, state_store)
-
-    return CliRuntime(
-        workflow_api=workflow_api,
-        approval_api=approval_api,
-        run_api=run_api,
-        workflow_repo=workflow_repo,
-        step_plan_repo=step_plan_repo,
-        planner=planner,
-        mcp_client=mcp_client,
-        llm_client=llm_client,
-        using_mock=using_mock,
-    )
 
 
 def _rewrite_step_plan_paths(
@@ -270,7 +190,7 @@ def _rewrite_step_plan_paths(
         for key in ("file", "output"):
             raw = step.resolved_input.get(key)
             if isinstance(raw, str):
-                step.resolved_input[key] = _resolve_path(raw, workspace)
+                step.resolved_input[key] = resolve_path(raw, workspace)
     step_plan_repo.save(step_plan)
     return step_plan
 
@@ -292,11 +212,11 @@ def _ensure_mock_source_file(step_plan: StepPlan) -> None:
 
 def _resolve_workflow_id(
     args: argparse.Namespace,
-    runtime: CliRuntime,
+    runtime: AppRuntime,
     workspace: Path,
 ) -> str:
     if args.workflow_xml is not None:
-        xml_path = _resolve_file_arg(args.workflow_xml, workspace)
+        xml_path = resolve_file_arg(args.workflow_xml, workspace)
         imported = runtime.workflow_repo.import_from_xml(xml_path)
         return imported.workflow_id
 
@@ -339,7 +259,7 @@ def _start_and_resume(
     while args.auto_approve and run["approval_status"] == "PENDING":
         if resume_attempt >= args.max_resume:
             break
-        run = run_api.resume_run(run_id=run["run_id"], approved=True)
+        run = run_api.respond_to_approval(run_id=run["run_id"], approve=True)
         resume_attempt += 1
     return run
 
@@ -403,7 +323,7 @@ def _print_result(run: dict[str, Any], warning: str | None) -> None:
     )
 
 
-def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRuntime) -> int:
+def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: AppRuntime) -> int:
     try:
         workflow_id = _resolve_workflow_id(args, runtime, workspace)
         plan = runtime.workflow_api.generate_step_plan(workflow_id)
@@ -417,8 +337,6 @@ def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRunt
             _ensure_mock_source_file(rewritten_plan)
         if args.print_plan:
             _print_plan(rewritten_plan)
-        if args.auto_approve:
-            runtime.approval_api.approve_step_plan(rewritten_plan.step_plan_id)
 
         run = _start_and_resume(
             args=args,
@@ -426,7 +344,7 @@ def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRunt
             workflow_id=workflow_id,
             step_plan_id=rewritten_plan.step_plan_id,
         )
-        _print_result(run, runtime.planner.last_warning)
+        _print_result(run, getattr(runtime.planner, "last_warning", None))
 
         if run.get("last_error") is not None:
             return 1
@@ -434,39 +352,50 @@ def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: CliRunt
             return 2
         return 0
     finally:
-        if hasattr(runtime.mcp_client, "close"):
-            runtime.mcp_client.close()
-        if runtime.llm_client is not None:
-            runtime.llm_client.close()
+        runtime.close()
 
 
-def _run(args: argparse.Namespace) -> int:
-    workspace = Path(args.workspace).resolve()
+def _run(args: argparse.Namespace, config: AppConfig) -> int:
+    workspace = config.resolve_workspace(args.workspace)
     workspace.mkdir(parents=True, exist_ok=True)
 
-    snapshots_dir = Path(args.snapshots_dir)
-    if not snapshots_dir.is_absolute():
-        snapshots_dir = (workspace / snapshots_dir).resolve()
+    snapshots_dir = config.resolve_within_workspace(args.snapshots_dir, workspace)
+    workflow_root = config.resolve_within_workspace(args.workflow_root, workspace)
+    plan_root = config.resolve_within_workspace(args.plan_root, workspace)
+    state_root = config.resolve_within_workspace(args.state_root, workspace)
+    audit_root = config.resolve_within_workspace(args.audit_root, workspace)
 
-    workflow_root = Path(args.workflow_root)
-    if not workflow_root.is_absolute():
-        workflow_root = (workspace / workflow_root).resolve()
-
-    plan_root = Path(args.plan_root)
-    if not plan_root.is_absolute():
-        plan_root = (workspace / plan_root).resolve()
-
-    runtime = _build_runtime(
-        args=args,
-        workspace=workspace,
-        snapshots_dir=snapshots_dir,
-        workflow_root=workflow_root,
-        plan_root=plan_root,
+    runtime = build_runtime(
+        RuntimeConfig(
+            workspace=workspace,
+            snapshots_dir=snapshots_dir,
+            workflow_root=workflow_root,
+            plan_root=plan_root,
+            state_root=state_root,
+            audit_root=audit_root,
+            mcp_endpoint=args.mcp_endpoint,
+            llm_provider=args.llm_provider,
+            llm_proposal_file=args.llm_proposal_file,
+            llm_openai_model=args.llm_openai_model,
+            llm_openai_api_key_env=args.llm_openai_api_key_env,
+            llm_openai_base_url=args.llm_openai_base_url,
+            llm_openai_timeout=args.llm_openai_timeout,
+            llm_google_model=args.llm_google_model,
+            llm_google_api_key_env=args.llm_google_api_key_env,
+            llm_google_base_url=args.llm_google_base_url,
+            llm_google_timeout=args.llm_google_timeout,
+            llm_planner_mode=args.llm_planner_mode,
+            llm_temperature=args.llm_temperature,
+            llm_max_tokens=args.llm_max_tokens,
+            repair_max_attempts=args.repair_max_attempts,
+        )
     )
     return _execute_runtime(args, workspace, runtime)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
+    config_path = resolve_config_path(argv)
+    config = load_app_config(config_path)
+    parser = build_parser(config)
     args = parser.parse_args(argv)
-    return _run(args)
+    return _run(args, config)

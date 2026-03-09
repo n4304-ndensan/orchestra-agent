@@ -5,6 +5,7 @@ from .safe_augmented_planner import (
     LlmStepProposalProvider,
     SafeAugmentedLlmPlanner,
 )
+from .structured_llm_planner import StructuredLlmPlanner
 
 __all__ = [
     "IStepProposalProvider",
@@ -13,4 +14,5 @@ __all__ = [
     "LlmPlanner",
     "PlannerDefaults",
     "SafeAugmentedLlmPlanner",
+    "StructuredLlmPlanner",
 ]

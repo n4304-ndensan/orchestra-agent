@@ -41,7 +41,7 @@ class FailureHandler:
         step_plan_repository: IStepPlanRepository,
         audit_logger: IAuditLogger,
         workflow_repository: IWorkflowRepository | None = None,
-        max_replans: int = 1,
+        max_replans: int = 3,
     ) -> None:
         self._snapshot_manager = snapshot_manager
         self._planner = planner
@@ -71,6 +71,7 @@ class FailureHandler:
         )
         return self._replan_with_feedback(
             workflow=context.workflow,
+            previous_plan=context.step_plan,
             run_id=context.state.run_id,
             feedback=feedback,
             replan_attempt=replan_attempt,
@@ -105,6 +106,7 @@ class FailureHandler:
         message = f"User feedback for step '{reviewed_step.step_id}': {feedback}"
         return self._replan_with_feedback(
             workflow=workflow,
+            previous_plan=step_plan,
             run_id=state.run_id,
             feedback=message,
             replan_attempt=replan_attempt,
@@ -115,6 +117,7 @@ class FailureHandler:
     def _replan_with_feedback(
         self,
         workflow: Workflow,
+        previous_plan: StepPlan,
         run_id: str,
         feedback: str,
         replan_attempt: int,
@@ -135,6 +138,7 @@ class FailureHandler:
             self._workflow_repository.save(updated_workflow)
 
         replanned = self._planner.compile_step_plan(updated_workflow)
+        replanned = self._carry_forward_paths(previous_plan, replanned)
         evaluated = self._policy_engine.evaluate(replanned)
         self._step_plan_repository.save(evaluated.step_plan)
 
@@ -157,3 +161,16 @@ class FailureHandler:
             approval_status=evaluated.approval_status,
             reason=reason,
         )
+
+    @staticmethod
+    def _carry_forward_paths(previous_plan: StepPlan, replanned: StepPlan) -> StepPlan:
+        previous_steps = previous_plan.step_map()
+        for step in replanned.steps:
+            previous = previous_steps.get(step.step_id)
+            if previous is None:
+                continue
+            for key in ("file", "output"):
+                previous_value = previous.resolved_input.get(key)
+                if isinstance(previous_value, str):
+                    step.resolved_input[key] = previous_value
+        return replanned
