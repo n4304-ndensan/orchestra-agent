@@ -137,30 +137,7 @@ def test_chatgpt_playwright_llm_client_wraps_session_errors() -> None:
     )
 
     try:
-        with pytest.raises(
-            RuntimeError,
-            match="ChatGPT Playwright request failed.*browser disconnected",
-        ):
-            client.generate(
-                LlmGenerateRequest(messages=(LlmMessage(role="user", content="hello"),))
-            )
-    finally:
-        client.close()
-
-
-def test_chatgpt_playwright_llm_client_wraps_startup_errors_with_reason() -> None:
-    client = ChatGptPlaywrightLlmClient(
-        start_url="https://chatgpt.com/g/private-agent",
-        session_factory=lambda chrome_path, profile_dir, port: (_ for _ in ()).throw(
-            RuntimeError("CDPポートが応答しません")
-        ),
-    )
-
-    try:
-        with pytest.raises(
-            RuntimeError,
-            match="ChatGPT Playwright session initialization failed.*CDPポートが応答しません",
-        ):
+        with pytest.raises(RuntimeError, match="ChatGPT Playwright request failed"):
             client.generate(
                 LlmGenerateRequest(messages=(LlmMessage(role="user", content="hello"),))
             )

@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from orchestra_agent.ports.llm_client import ILlmClient, LlmGenerateRequest
-from orchestra_agent.shared.error_handling import clean_exception_message, text_preview
 
 type ChatGptSessionFactory = Callable[[str, Path | None, int], Any]
 
@@ -38,9 +37,8 @@ class ChatGptPlaywrightLlmClient(ILlmClient):
         try:
             response = session.chat(prompt, file_paths=file_paths)
         except Exception as exc:  # noqa: BLE001
-            reason = text_preview(clean_exception_message(exc))
             raise RuntimeError(
-                f"ChatGPT Playwright request failed for '{self._start_url}': {reason}"
+                f"ChatGPT Playwright request failed for '{self._start_url}'."
             ) from exc
         if not isinstance(response, str):
             raise RuntimeError(
@@ -67,10 +65,8 @@ class ChatGptPlaywrightLlmClient(ILlmClient):
             )
             session.start_chat(self._start_url)
         except Exception as exc:  # noqa: BLE001
-            reason = text_preview(clean_exception_message(exc))
             raise RuntimeError(
-                "ChatGPT Playwright session initialization failed for "
-                f"'{self._start_url}': {reason}"
+                f"ChatGPT Playwright session initialization failed for '{self._start_url}'."
             ) from exc
         self._session = session
         return session

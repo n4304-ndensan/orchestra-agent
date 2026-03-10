@@ -617,6 +617,7 @@ name = "orchestra-agent"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "chat-gpt-playwright" },
     { name = "httpx" },
     { name = "langgraph" },
     { name = "pydantic" },
@@ -625,9 +626,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-chatgpt-playwright = [
-    { name = "chat-gpt-playwright" },
-]
 mcp-server = [
     { name = "mcp" },
     { name = "openpyxl" },
@@ -643,7 +641,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "chat-gpt-playwright", marker = "extra == 'chatgpt-playwright'", git = "https://github.com/n4304-ndensan/chat-gpt-playwright.git" },
+    { name = "chat-gpt-playwright", git = "https://github.com/n4304-ndensan/chat-gpt-playwright.git" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "langgraph", specifier = ">=1.0.9" },
     { name = "mcp", marker = "extra == 'mcp-server'", specifier = ">=1.0.0" },
@@ -653,7 +651,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.13.1" },
     { name = "typer", specifier = ">=0.24.1" },
 ]
-provides-extras = ["chatgpt-playwright", "mcp-server"]
+provides-extras = ["mcp-server"]
 
 [package.metadata.requires-dev]
 dev = [
