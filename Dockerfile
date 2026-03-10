@@ -6,7 +6,7 @@ ENV PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-COPY pyproject.toml README.md LICENSE main.py ./
+COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 
 RUN pip install --upgrade pip \

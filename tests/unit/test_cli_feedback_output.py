@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import shutil
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from orchestra_agent.adapters.db import FilesystemStepPlanRepository, XmlWorkflowRepository
 from orchestra_agent.cli import _print_approval_preview, _print_feedback_replan_summary
 from orchestra_agent.domain import BackupScope, Step, StepPlan, Workflow
+from orchestra_agent.runtime import RuntimeArtifacts
 
 
 def test_feedback_summary_prints_regenerated_artifact_paths(capsys) -> None:
@@ -16,7 +17,14 @@ def test_feedback_summary_prints_regenerated_artifact_paths(capsys) -> None:
     try:
         workflow_repo = XmlWorkflowRepository(base / "workflow")
         step_plan_repo = FilesystemStepPlanRepository(base / "plan")
-        runtime = SimpleNamespace(workflow_repo=workflow_repo, step_plan_repo=step_plan_repo)
+        runtime = SimpleNamespace(
+            workflow_repo=workflow_repo,
+            step_plan_repo=step_plan_repo,
+            artifacts=RuntimeArtifacts(
+                workflow_root=base / "workflow",
+                plan_root=base / "plan",
+            ),
+        )
 
         workflow_repo.save(
             Workflow(

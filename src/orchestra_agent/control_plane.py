@@ -12,7 +12,13 @@ from orchestra_agent.config import AppConfig, load_app_config, resolve_config_pa
 from orchestra_agent.domain.serialization import step_plan_to_dict, workflow_to_dict
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
-from orchestra_agent.runtime import AppRuntime, RuntimeConfig, build_runtime
+from orchestra_agent.runtime import (
+    AppRuntime,
+    RuntimeConfig,
+    build_runtime,
+    describe_mcp_tools,
+    resolve_mcp_endpoints,
+)
 
 
 class ControlPlaneServer(ThreadingHTTPServer):
@@ -50,7 +56,7 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     {
-                        "tools": _describe_mcp_tools(self.server.runtime.mcp_client),
+                        "tools": describe_mcp_tools(self.server.runtime.mcp_client),
                     },
                 )
                 return
@@ -311,23 +317,6 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_mcp_endpoints(
-    raw_endpoints: list[str] | None,
-    config: AppConfig,
-) -> tuple[str, ...]:
-    if raw_endpoints is not None:
-        candidates = raw_endpoints
-    else:
-        candidates = list(config.mcp.runtime_endpoints())
-    resolved: list[str] = []
-    for candidate in candidates:
-        if not candidate.strip():
-            continue
-        if candidate not in resolved:
-            resolved.append(candidate)
-    return tuple(resolved)
-
-
 def main(argv: list[str] | None = None) -> int:
     config_path = resolve_config_path(argv)
     config = load_app_config(config_path)
@@ -349,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
             snapshots_dir=config.resolve_within_workspace(args.snapshots_dir, workspace),
             state_root=config.resolve_within_workspace(args.state_root, workspace),
             audit_root=config.resolve_within_workspace(args.audit_root, workspace),
-            mcp_endpoints=_resolve_mcp_endpoints(args.mcp_endpoint, config),
+            mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
             llm_provider=args.llm_provider,
             llm_proposal_file=args.llm_proposal_file,
             llm_openai_model=args.llm_openai_model,
@@ -448,30 +437,6 @@ def _as_yes_no_bool(value: Any, *, field_name: str, default: bool) -> bool:
         if normalized in {"no", "n", "false", "0"}:
             return False
     raise ValueError(f"Field '{field_name}' must be a boolean or yes/no string.")
-
-
-def _describe_mcp_tools(mcp_client: Any) -> list[dict[str, str]]:
-    describe_tools = getattr(mcp_client, "describe_tools", None)
-    if callable(describe_tools):
-        raw_tools = describe_tools()
-        tools: list[dict[str, str]] = []
-        for raw_tool in raw_tools:
-            if not isinstance(raw_tool, dict):
-                continue
-            name = raw_tool.get("name")
-            if not isinstance(name, str):
-                continue
-            description = raw_tool.get("description")
-            tools.append(
-                {
-                    "name": name,
-                    "description": description if isinstance(description, str) else "",
-                }
-            )
-        if tools:
-            return tools
-
-    return [{"name": name, "description": ""} for name in mcp_client.list_tools()]
 
 
 if __name__ == "__main__":

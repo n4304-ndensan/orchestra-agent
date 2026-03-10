@@ -15,6 +15,7 @@ from orchestra_agent.runtime import (
     RuntimeConfig,
     build_runtime,
     resolve_file_arg,
+    resolve_mcp_endpoints,
     resolve_path,
 )
 
@@ -285,23 +286,6 @@ def _resolve_reference_files(raw_files: list[str] | None, workspace: Path) -> li
     return resolved_files
 
 
-def _resolve_mcp_endpoints(
-    raw_endpoints: list[str] | None,
-    config: AppConfig,
-) -> tuple[str, ...]:
-    if raw_endpoints is not None:
-        candidates = raw_endpoints
-    else:
-        candidates = list(config.mcp.runtime_endpoints())
-    resolved: list[str] = []
-    for candidate in candidates:
-        if not candidate.strip():
-            continue
-        if candidate not in resolved:
-            resolved.append(candidate)
-    return tuple(resolved)
-
-
 def _start_and_resume(
     args: argparse.Namespace,
     workspace: Path,
@@ -316,18 +300,44 @@ def _start_and_resume(
         run_id=args.run_id,
         approved=args.auto_approve,
     )
+    run, resume_attempt = _resume_auto_approvals(args, run_api, run)
+    if args.auto_approve:
+        return run
+
+    return _resume_interactive_approvals(
+        args=args,
+        workspace=workspace,
+        runtime=runtime,
+        run_api=run_api,
+        run=run,
+        resume_attempt=resume_attempt,
+    )
+
+
+def _resume_auto_approvals(
+    args: argparse.Namespace,
+    run_api: RunAPI,
+    run: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
     resume_attempt = 0
     while args.auto_approve and run["approval_status"] == "PENDING":
         if resume_attempt >= args.max_resume:
             break
         run = run_api.respond_to_approval(run_id=run["run_id"], approve=True)
         resume_attempt += 1
-    if args.auto_approve:
-        return run
+    return run, resume_attempt
 
-    if not args.interactive_approval:
-        return run
-    if not _run_requires_terminal_action(run):
+
+def _resume_interactive_approvals(
+    *,
+    args: argparse.Namespace,
+    workspace: Path,
+    runtime: AppRuntime,
+    run_api: RunAPI,
+    run: dict[str, Any],
+    resume_attempt: int,
+) -> dict[str, Any]:
+    if not args.interactive_approval or not _run_requires_terminal_action(run):
         return run
     if not sys.stdin.isatty():
         print(
@@ -339,18 +349,40 @@ def _start_and_resume(
     while resume_attempt < args.max_resume and _run_requires_terminal_action(run):
         action, feedback = _prompt_approval_action(run)
         if action == "feedback":
-            assert feedback is not None
-            previous_run = run
-            run = run_api.respond_to_approval(run_id=run["run_id"], feedback=feedback)
-            if isinstance(run.get("step_plan_id"), str):
-                _rewrite_step_plan_paths(runtime.step_plan_repo, str(run["step_plan_id"]), workspace)
-            _print_feedback_replan_summary(previous_run, run, runtime)
+            run = _apply_feedback_and_resume(
+                workspace=workspace,
+                runtime=runtime,
+                run_api=run_api,
+                run=run,
+                feedback=feedback,
+            )
             resume_attempt += 1
             continue
         run = run_api.respond_to_approval(run_id=run["run_id"], approve=(action == "approve"))
         resume_attempt += 1
         if action == "reject":
             break
+    return run
+
+
+def _apply_feedback_and_resume(
+    *,
+    workspace: Path,
+    runtime: AppRuntime,
+    run_api: RunAPI,
+    run: dict[str, Any],
+    feedback: str | None,
+) -> dict[str, Any]:
+    assert feedback is not None
+    previous_run = run
+    run = run_api.respond_to_approval(run_id=run["run_id"], feedback=feedback)
+    if isinstance(run.get("step_plan_id"), str):
+        _rewrite_step_plan_paths(
+            runtime.step_plan_repo,
+            str(run["step_plan_id"]),
+            workspace,
+        )
+    _print_feedback_replan_summary(previous_run, run, runtime)
     return run
 
 
@@ -467,10 +499,10 @@ def _print_feedback_replan_summary(
         outcome = "state changed"
 
     print(f"[feedback] {target} -> {summary}, {outcome}")
-    print(f"  workflow  {runtime.workflow_repo.workflow_path(workflow_id, workflow_version)}")
+    print(f"  workflow  {runtime.artifacts.workflow_path(workflow_id, workflow_version)}")
     print(
         "  step plan "
-        f"{runtime.step_plan_repo.step_plan_json_path(workflow_id, step_plan_id, step_plan_version)}"
+        f"{runtime.artifacts.step_plan_json_path(workflow_id, step_plan_id, step_plan_version)}"
     )
 
 
@@ -582,7 +614,7 @@ def _run(args: argparse.Namespace, config: AppConfig) -> int:
             plan_root=plan_root,
             state_root=state_root,
             audit_root=audit_root,
-            mcp_endpoints=_resolve_mcp_endpoints(args.mcp_endpoint, config),
+            mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
             llm_provider=args.llm_provider,
             llm_proposal_file=args.llm_proposal_file,
             llm_openai_model=args.llm_openai_model,
