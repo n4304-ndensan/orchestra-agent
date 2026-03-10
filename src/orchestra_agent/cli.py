@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -141,6 +142,17 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
         help="Google Gemini request timeout seconds",
     )
     parser.add_argument(
+        "--llm-tls-verify",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.llm.tls_verify,
+        help="Enable TLS certificate verification for live LLM HTTP calls.",
+    )
+    parser.add_argument(
+        "--llm-tls-ca-bundle",
+        default=defaults.llm.tls_ca_bundle,
+        help="Path to custom CA bundle file for live LLM HTTP calls.",
+    )
+    parser.add_argument(
         "--llm-planner-mode",
         choices=["deterministic", "augmented", "full"],
         default=defaults.llm.planner_mode,
@@ -163,6 +175,15 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=defaults.runtime.auto_approve,
         help="Automatically approve and resume pending approvals",
+    )
+    parser.add_argument(
+        "--interactive-approval",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.runtime.interactive_approval,
+        help=(
+            "When auto-approve is off, ask approval decisions in yes/no format "
+            "on the terminal."
+        ),
     )
     parser.add_argument(
         "--max-resume",
@@ -299,7 +320,43 @@ def _start_and_resume(
             break
         run = run_api.respond_to_approval(run_id=run["run_id"], approve=True)
         resume_attempt += 1
+    if args.auto_approve:
+        return run
+
+    if run.get("approval_status") != "PENDING":
+        return run
+    if not args.interactive_approval:
+        return run
+    if not sys.stdin.isatty():
+        print("[approval] run is pending and stdin is non-interactive. Use API or --auto-approve.")
+        return run
+
+    while run.get("approval_status") == "PENDING":
+        if resume_attempt >= args.max_resume:
+            break
+        approve = _prompt_yes_no(run.get("pending_approval"))
+        run = run_api.respond_to_approval(run_id=run["run_id"], approve=approve)
+        resume_attempt += 1
+        if not approve:
+            break
     return run
+
+
+def _prompt_yes_no(pending_approval: Any) -> bool:
+    message = "Approval is pending."
+    if isinstance(pending_approval, dict):
+        detail = pending_approval.get("message")
+        if isinstance(detail, str) and detail.strip():
+            message = detail
+
+    print(f"[approval] {message}")
+    while True:
+        raw = input("Approve? (yes/no): ").strip().lower()
+        if raw in {"yes", "y"}:
+            return True
+        if raw in {"no", "n"}:
+            return False
+        print("Please answer 'yes' or 'no'.")
 
 
 def _print_plan(step_plan: StepPlan) -> None:
@@ -402,6 +459,11 @@ def _run(args: argparse.Namespace, config: AppConfig) -> int:
     plan_root = config.resolve_within_workspace(args.plan_root, workspace)
     state_root = config.resolve_within_workspace(args.state_root, workspace)
     audit_root = config.resolve_within_workspace(args.audit_root, workspace)
+    llm_tls_ca_bundle = (
+        config.resolve_from_config(args.llm_tls_ca_bundle)
+        if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
+        else None
+    )
 
     runtime = build_runtime(
         RuntimeConfig(
@@ -422,6 +484,8 @@ def _run(args: argparse.Namespace, config: AppConfig) -> int:
             llm_google_api_key_env=args.llm_google_api_key_env,
             llm_google_base_url=args.llm_google_base_url,
             llm_google_timeout=args.llm_google_timeout,
+            llm_tls_verify=args.llm_tls_verify,
+            llm_tls_ca_bundle=llm_tls_ca_bundle,
             llm_planner_mode=args.llm_planner_mode,
             llm_temperature=args.llm_temperature,
             llm_max_tokens=args.llm_max_tokens,

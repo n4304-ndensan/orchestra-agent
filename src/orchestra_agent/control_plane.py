@@ -161,7 +161,7 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
     def _approve_plan(self, step_plan_id: str, body: dict[str, Any]) -> dict[str, Any]:
         run_flags = _optional_bool_map(body.get("run_flags"))
         skip_flags = _optional_bool_map(body.get("skip_flags"))
-        reject = bool(body.get("reject", False))
+        reject = _as_yes_no_bool(body.get("reject"), field_name="reject", default=False)
         return self.server.runtime.approval_api.approve_step_plan(
             step_plan_id=step_plan_id,
             run_flags=run_flags,
@@ -173,7 +173,7 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
         workflow_id = _required_str(body, "workflow_id")
         step_plan_id = _required_str(body, "step_plan_id")
         run_id = _optional_str(body.get("run_id"))
-        approved = bool(body.get("approved", False))
+        approved = _as_yes_no_bool(body.get("approved"), field_name="approved", default=False)
         return self.server.runtime.run_api.start_run(
             workflow_id=workflow_id,
             step_plan_id=step_plan_id,
@@ -182,7 +182,7 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
         )
 
     def _respond_to_approval(self, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        approve = bool(body.get("approve", True))
+        approve = _as_yes_no_bool(body.get("approve"), field_name="approve", default=True)
         feedback = _optional_str(body.get("feedback"))
         return self.server.runtime.run_api.respond_to_approval(
             run_id=run_id,
@@ -289,6 +289,12 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument("--llm-google-timeout", type=float, default=defaults.llm.google_timeout)
     parser.add_argument(
+        "--llm-tls-verify",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.llm.tls_verify,
+    )
+    parser.add_argument("--llm-tls-ca-bundle", default=defaults.llm.tls_ca_bundle)
+    parser.add_argument(
         "--llm-planner-mode",
         choices=["deterministic", "augmented", "full"],
         default=defaults.llm.planner_mode,
@@ -330,6 +336,11 @@ def main(argv: list[str] | None = None) -> int:
 
     workspace = config.resolve_workspace(args.workspace)
     workspace.mkdir(parents=True, exist_ok=True)
+    llm_tls_ca_bundle = (
+        config.resolve_from_config(args.llm_tls_ca_bundle)
+        if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
+        else None
+    )
     runtime = build_runtime(
         RuntimeConfig(
             workspace=workspace,
@@ -349,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
             llm_google_api_key_env=args.llm_google_api_key_env,
             llm_google_base_url=args.llm_google_base_url,
             llm_google_timeout=args.llm_google_timeout,
+            llm_tls_verify=args.llm_tls_verify,
+            llm_tls_ca_bundle=llm_tls_ca_bundle,
             llm_planner_mode=args.llm_planner_mode,
             llm_temperature=args.llm_temperature,
             llm_max_tokens=args.llm_max_tokens,
@@ -421,6 +434,20 @@ def _optional_bool_map(value: Any) -> dict[str, bool] | None:
         if not isinstance(item, bool):
             raise ValueError("Expected an object whose values are booleans.")
     return {str(key): value for key, value in value.items()}
+
+
+def _as_yes_no_bool(value: Any, *, field_name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"yes", "y", "true", "1"}:
+            return True
+        if normalized in {"no", "n", "false", "0"}:
+            return False
+    raise ValueError(f"Field '{field_name}' must be a boolean or yes/no string.")
 
 
 def _describe_mcp_tools(mcp_client: Any) -> list[dict[str, str]]:
