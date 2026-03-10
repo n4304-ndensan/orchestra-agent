@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+import pytest
 
 from orchestra_agent.adapters.llm import OpenAILlmClient
 from orchestra_agent.ports import LlmAttachment, LlmGenerateRequest, LlmMessage
@@ -91,5 +92,23 @@ def test_openai_llm_client_raises_on_missing_choices() -> None:
             pass
         else:
             raise AssertionError("Expected RuntimeError")
+    finally:
+        client.close()
+
+
+def test_openai_llm_client_wraps_http_status_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, request=request, json={"error": {"message": "bad key"}})
+
+    client = OpenAILlmClient(
+        api_key="test-key",
+        model="gpt-4.1-mini",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="HTTP 401"):
+            client.generate(
+                LlmGenerateRequest(messages=(LlmMessage(role="user", content="hello"),))
+            )
     finally:
         client.close()

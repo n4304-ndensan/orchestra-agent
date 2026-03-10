@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from orchestra_agent import __version__
 from orchestra_agent.config import AppConfig, load_app_config, resolve_config_path
+from orchestra_agent.control_plane_inspector import ControlPlaneInspector
 from orchestra_agent.domain.serialization import step_plan_to_dict, workflow_to_dict
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
@@ -19,9 +23,14 @@ from orchestra_agent.runtime import (
     describe_mcp_tools,
     resolve_mcp_endpoints,
 )
+from orchestra_agent.shared.error_handling import classify_exception, human_error_lines
 
 
 class ControlPlaneServer(ThreadingHTTPServer):
+    runtime: AppRuntime
+    workspace: Path
+    started_at: datetime
+
     def __init__(
         self,
         server_address: tuple[str, int],
@@ -32,6 +41,7 @@ class ControlPlaneServer(ThreadingHTTPServer):
     ) -> None:
         self.runtime = runtime
         self.workspace = workspace
+        self.started_at = datetime.now(UTC)
         super().__init__(server_address, request_handler_class)
 
 
@@ -42,94 +52,50 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         segments = _path_segments(parsed.path)
         try:
-            if parsed.path == "/health":
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "status": "ok",
-                        "workspace": str(self.server.workspace),
-                    },
-                )
+            static_response = self._dispatch_static_get(parsed.path)
+            if static_response is not None:
+                status, payload = static_response
+                self._send_json(status, payload)
                 return
 
-            if parsed.path == "/tools":
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "tools": describe_mcp_tools(self.server.runtime.mcp_client),
-                    },
-                )
-                return
-
-            if len(segments) == 2 and segments[0] == "workflows":
-                self._send_json(HTTPStatus.OK, self._get_workflow(segments[1]))
-                return
-
-            if len(segments) == 2 and segments[0] == "plans":
-                self._send_json(HTTPStatus.OK, self._get_plan(segments[1]))
-                return
-
-            if len(segments) == 2 and segments[0] == "runs":
-                self._send_json(HTTPStatus.OK, self.server.runtime.run_api.get_run(segments[1]))
-                return
-
-            if len(segments) == 3 and segments[0] == "runs" and segments[2] == "audit":
-                limit = _query_limit(parsed.query)
-                self._send_json(
-                    HTTPStatus.OK,
-                    {
-                        "events": self.server.runtime.audit_logger.list_events(
-                            run_id=segments[1],
-                            limit=limit,
-                        )
-                    },
-                )
+            resource_response = self._dispatch_resource_get(segments, parsed.query)
+            if resource_response is not None:
+                status, payload = resource_response
+                self._send_json(status, payload)
                 return
 
             self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", "Resource not found.")
-        except KeyError as exc:
-            self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", str(exc))
-        except FileNotFoundError as exc:
-            self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
-        except ValueError as exc:
-            self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            report = classify_exception(exc)
+            self._send_error_json(
+                report.http_status,
+                report.code,
+                report.message,
+                hint=report.hint,
+                details=report.details,
+            )
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         segments = _path_segments(parsed.path)
         try:
             body = self._read_json_body()
-
-            if parsed.path == "/workflows":
-                self._send_json(HTTPStatus.CREATED, self._create_workflow(body))
-                return
-
-            if len(segments) == 3 and segments[0] == "workflows" and segments[2] == "plans":
-                self._send_json(
-                    HTTPStatus.CREATED,
-                    self.server.runtime.workflow_api.generate_step_plan(segments[1]),
-                )
-                return
-
-            if len(segments) == 3 and segments[0] == "plans" and segments[2] == "approve":
-                self._send_json(HTTPStatus.OK, self._approve_plan(segments[1], body))
-                return
-
-            if parsed.path == "/runs":
-                self._send_json(HTTPStatus.CREATED, self._start_run(body))
-                return
-
-            if len(segments) == 3 and segments[0] == "runs" and segments[2] == "approval":
-                self._send_json(HTTPStatus.OK, self._respond_to_approval(segments[1], body))
+            post_response = self._dispatch_post(parsed.path, segments, body)
+            if post_response is not None:
+                status, payload = post_response
+                self._send_json(status, payload)
                 return
 
             self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", "Resource not found.")
-        except KeyError as exc:
-            self._send_error_json(HTTPStatus.NOT_FOUND, "not_found", str(exc))
-        except ValueError as exc:
-            self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_request", str(exc))
-        except json.JSONDecodeError as exc:
-            self._send_error_json(HTTPStatus.BAD_REQUEST, "invalid_json", str(exc))
+        except Exception as exc:  # noqa: BLE001
+            report = classify_exception(exc)
+            self._send_error_json(
+                report.http_status,
+                report.code,
+                report.message,
+                hint=report.hint,
+                details=report.details,
+            )
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return
@@ -224,13 +190,100 @@ class ControlPlaneRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _send_error_json(self, status: HTTPStatus, code: str, message: str) -> None:
-        self._send_json(status, {"error": {"code": code, "message": message}})
+    def _send_error_json(
+        self,
+        status: HTTPStatus,
+        code: str,
+        message: str,
+        *,
+        hint: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"code": code, "message": message}
+        if hint is not None:
+            payload["hint"] = hint
+        if details:
+            payload["details"] = details
+        self._send_json(status, {"error": payload})
+
+    def _inspector(self) -> ControlPlaneInspector:
+        return ControlPlaneInspector(
+            runtime=self.server.runtime,
+            workspace=self.server.workspace,
+            started_at=self.server.started_at,
+        )
+
+    def _dispatch_static_get(self, path: str) -> tuple[HTTPStatus, dict[str, Any]] | None:
+        inspector = self._inspector()
+        if path == "/":
+            return HTTPStatus.OK, inspector.service_index()
+        if path == "/health":
+            return HTTPStatus.OK, inspector.health_payload()
+        if path == "/ready":
+            return inspector.readiness_payload()
+        if path == "/system":
+            return HTTPStatus.OK, inspector.system_payload()
+        if path == "/tools":
+            return (
+                HTTPStatus.OK,
+                {"tools": describe_mcp_tools(self.server.runtime.mcp_client)},
+            )
+        return None
+
+    def _dispatch_resource_get(
+        self,
+        segments: list[str],
+        query: str,
+    ) -> tuple[HTTPStatus, dict[str, Any]] | None:
+        if len(segments) == 2 and segments[0] == "workflows":
+            return HTTPStatus.OK, self._get_workflow(segments[1])
+        if len(segments) == 2 and segments[0] == "plans":
+            return HTTPStatus.OK, self._get_plan(segments[1])
+        if len(segments) == 2 and segments[0] == "runs":
+            return HTTPStatus.OK, self.server.runtime.run_api.get_run(segments[1])
+        if len(segments) == 3 and segments[0] == "runs" and segments[2] == "audit":
+            limit = _query_limit(query)
+            return (
+                HTTPStatus.OK,
+                {
+                    "events": self.server.runtime.audit_logger.list_events(
+                        run_id=segments[1],
+                        limit=limit,
+                    )
+                },
+            )
+        return None
+
+    def _dispatch_post(
+        self,
+        path: str,
+        segments: list[str],
+        body: dict[str, Any],
+    ) -> tuple[HTTPStatus, dict[str, Any]] | None:
+        if path == "/workflows":
+            return HTTPStatus.CREATED, self._create_workflow(body)
+        if len(segments) == 3 and segments[0] == "workflows" and segments[2] == "plans":
+            return (
+                HTTPStatus.CREATED,
+                self.server.runtime.workflow_api.generate_step_plan(segments[1]),
+            )
+        if len(segments) == 3 and segments[0] == "plans" and segments[2] == "approve":
+            return HTTPStatus.OK, self._approve_plan(segments[1], body)
+        if path == "/runs":
+            return HTTPStatus.CREATED, self._start_run(body)
+        if len(segments) == 3 and segments[0] == "runs" and segments[2] == "approval":
+            return HTTPStatus.OK, self._respond_to_approval(segments[1], body)
+        return None
 
 
 def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     defaults = config or AppConfig()
     parser = argparse.ArgumentParser(description="Run orchestra-agent control plane API server.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--config",
         default=str(config.source_path) if config and config.source_path is not None else None,
@@ -318,56 +371,67 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    config_path = resolve_config_path(argv)
-    config = load_app_config(config_path)
-    parser = build_parser(config)
-    args = parser.parse_args(argv)
-
-    workspace = config.resolve_workspace(args.workspace)
-    workspace.mkdir(parents=True, exist_ok=True)
-    llm_tls_ca_bundle = (
-        config.resolve_from_config(args.llm_tls_ca_bundle)
-        if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
-        else None
-    )
-    runtime = build_runtime(
-        RuntimeConfig(
-            workspace=workspace,
-            workflow_root=config.resolve_within_workspace(args.workflow_root, workspace),
-            plan_root=config.resolve_within_workspace(args.plan_root, workspace),
-            snapshots_dir=config.resolve_within_workspace(args.snapshots_dir, workspace),
-            state_root=config.resolve_within_workspace(args.state_root, workspace),
-            audit_root=config.resolve_within_workspace(args.audit_root, workspace),
-            mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
-            llm_provider=args.llm_provider,
-            llm_proposal_file=args.llm_proposal_file,
-            llm_openai_model=args.llm_openai_model,
-            llm_openai_api_key_env=args.llm_openai_api_key_env,
-            llm_openai_base_url=args.llm_openai_base_url,
-            llm_openai_timeout=args.llm_openai_timeout,
-            llm_google_model=args.llm_google_model,
-            llm_google_api_key_env=args.llm_google_api_key_env,
-            llm_google_base_url=args.llm_google_base_url,
-            llm_google_timeout=args.llm_google_timeout,
-            llm_tls_verify=args.llm_tls_verify,
-            llm_tls_ca_bundle=llm_tls_ca_bundle,
-            llm_planner_mode=args.llm_planner_mode,
-            llm_temperature=args.llm_temperature,
-            llm_max_tokens=args.llm_max_tokens,
-            repair_max_attempts=args.repair_max_attempts,
-        )
-    )
-    server = ControlPlaneServer(
-        (args.host, args.port),
-        ControlPlaneRequestHandler,
-        runtime=runtime,
-        workspace=workspace,
-    )
+    runtime: AppRuntime | None = None
+    server: ControlPlaneServer | None = None
     try:
+        config_path = resolve_config_path(argv)
+        config = load_app_config(config_path)
+        parser = build_parser(config)
+        args = parser.parse_args(argv)
+
+        workspace = config.resolve_workspace(args.workspace)
+        workspace.mkdir(parents=True, exist_ok=True)
+        llm_tls_ca_bundle = (
+            config.resolve_from_config(args.llm_tls_ca_bundle)
+            if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
+            else None
+        )
+        runtime = build_runtime(
+            RuntimeConfig(
+                workspace=workspace,
+                workflow_root=config.resolve_within_workspace(args.workflow_root, workspace),
+                plan_root=config.resolve_within_workspace(args.plan_root, workspace),
+                snapshots_dir=config.resolve_within_workspace(args.snapshots_dir, workspace),
+                state_root=config.resolve_within_workspace(args.state_root, workspace),
+                audit_root=config.resolve_within_workspace(args.audit_root, workspace),
+                mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
+                llm_provider=args.llm_provider,
+                llm_proposal_file=args.llm_proposal_file,
+                llm_openai_model=args.llm_openai_model,
+                llm_openai_api_key_env=args.llm_openai_api_key_env,
+                llm_openai_base_url=args.llm_openai_base_url,
+                llm_openai_timeout=args.llm_openai_timeout,
+                llm_google_model=args.llm_google_model,
+                llm_google_api_key_env=args.llm_google_api_key_env,
+                llm_google_base_url=args.llm_google_base_url,
+                llm_google_timeout=args.llm_google_timeout,
+                llm_tls_verify=args.llm_tls_verify,
+                llm_tls_ca_bundle=llm_tls_ca_bundle,
+                llm_planner_mode=args.llm_planner_mode,
+                llm_temperature=args.llm_temperature,
+                llm_max_tokens=args.llm_max_tokens,
+                repair_max_attempts=args.repair_max_attempts,
+            )
+        )
+        server = ControlPlaneServer(
+            (args.host, args.port),
+            ControlPlaneRequestHandler,
+            runtime=runtime,
+            workspace=workspace,
+        )
         server.serve_forever()
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        report = classify_exception(exc)
+        for line in human_error_lines(report):
+            print(line, file=sys.stderr)
+        return report.exit_code
     finally:
-        runtime.close()
-        server.server_close()
+        if runtime is not None:
+            runtime.close()
+        if server is not None:
+            server.server_close()
     return 0
 
 

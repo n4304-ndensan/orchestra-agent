@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Protocol
 
+from orchestra_agent import __version__
 from orchestra_agent.adapters import (
     DefaultPolicyEngine,
     FilesystemAgentStateStore,
@@ -39,6 +40,7 @@ from orchestra_agent.runtime_support.models import (
     PlannerMode,
     RuntimeArtifacts,
     RuntimeConfig,
+    RuntimeMetadata,
 )
 from orchestra_agent.runtime_support.pathing import (
     describe_mcp_tools,
@@ -227,6 +229,7 @@ class DefaultRuntimeFactory(IRuntimeFactory):
         audit_logger = FilesystemAuditLogger(config.audit_root)
         workflow_repo = XmlWorkflowRepository(config.workflow_root, audit_logger=audit_logger)
         step_plan_repo = FilesystemStepPlanRepository(config.plan_root, audit_logger=audit_logger)
+        normalized_endpoints = normalize_mcp_endpoints(config.mcp_endpoints, config.mcp_endpoint)
 
         mcp_bundle = self._mcp_client_factory.create(config)
         mcp_client = LoggingMcpClient(mcp_bundle.client, audit_logger)
@@ -291,8 +294,18 @@ class DefaultRuntimeFactory(IRuntimeFactory):
             llm_client=llm_client,
             audit_logger=audit_logger,
             artifacts=RuntimeArtifacts(
+                workspace_root=config.workspace,
                 workflow_root=config.workflow_root,
                 plan_root=config.plan_root,
+                snapshots_dir=config.snapshots_dir,
+                state_root=config.state_root,
+                audit_root=config.audit_root,
+            ),
+            metadata=RuntimeMetadata(
+                app_version=__version__,
+                llm_provider=config.llm_provider,
+                planner_mode=resolve_planner_mode(config),
+                mcp_endpoints=normalized_endpoints,
             ),
             using_mock=mcp_bundle.using_mock,
         )

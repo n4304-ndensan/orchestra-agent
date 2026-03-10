@@ -48,8 +48,6 @@ google_model = "gemini-2.5-flash"
 google_api_key_env = "GEMINI_API_KEY"
 google_base_url = "https://generativelanguage.googleapis.com"
 google_timeout = 60.0
-tls_verify = true
-tls_ca_bundle = "./workspace/.certs/company.crt"
 # For company TLS inspection environments, set your corporate CA bundle path.
 # Example: tls_ca_bundle = "./certs/company.crt"
 # tls_ca_bundle = "./certs/company.crt"

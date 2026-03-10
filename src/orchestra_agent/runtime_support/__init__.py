@@ -9,7 +9,14 @@ from .factories import (
     IRuntimeFactory,
     build_llm_provider,
 )
-from .models import AppRuntime, LlmProviderName, PlannerMode, RuntimeArtifacts, RuntimeConfig
+from .models import (
+    AppRuntime,
+    LlmProviderName,
+    PlannerMode,
+    RuntimeArtifacts,
+    RuntimeConfig,
+    RuntimeMetadata,
+)
 from .pathing import (
     describe_mcp_tools,
     normalize_mcp_endpoints,
@@ -32,6 +39,7 @@ __all__ = [
     "PlannerMode",
     "RuntimeArtifacts",
     "RuntimeConfig",
+    "RuntimeMetadata",
     "build_llm_provider",
     "describe_mcp_tools",
     "normalize_mcp_endpoints",

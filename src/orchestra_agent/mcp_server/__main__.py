@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
+from orchestra_agent import __version__
 from orchestra_agent.config import AppConfig, load_app_config, resolve_config_path
 from orchestra_agent.mcp_server import run_jsonrpc_server, run_mcp_server
 from orchestra_agent.mcp_server.logging_utils import (
@@ -9,6 +11,7 @@ from orchestra_agent.mcp_server.logging_utils import (
     get_mcp_logger,
     log_event,
 )
+from orchestra_agent.shared.error_handling import classify_exception, human_error_lines
 
 logger = get_mcp_logger(__name__)
 
@@ -16,6 +19,11 @@ logger = get_mcp_logger(__name__)
 def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     defaults = config or AppConfig()
     parser = argparse.ArgumentParser(description="Run orchestra-agent MCP server.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
     parser.add_argument(
         "--config",
         default=str(config.source_path) if config and config.source_path is not None else None,
@@ -69,48 +77,53 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     configure_mcp_logging()
-    config_path = resolve_config_path(argv)
-    config = load_app_config(config_path)
-    parser = build_parser(config)
-    args = parser.parse_args(argv)
     try:
+        config_path = resolve_config_path(argv)
+        config = load_app_config(config_path)
+        parser = build_parser(config)
+        args = parser.parse_args(argv)
         server_settings = config.mcp.resolve_server(args.server)
-    except (KeyError, ValueError) as exc:
-        parser.error(str(exc))
-    workspace = config.resolve_workspace(args.workspace)
-    server_name = args.name or server_settings.name
-    transport = args.transport or server_settings.transport
-    host = args.host or server_settings.host
-    port = args.port if args.port is not None else server_settings.port
-    path = args.path or server_settings.path
-    tool_group = args.tool_group or server_settings.tool_group
-    log_event(
-        logger,
-        "mcp_server_launch_config",
-        config_path=config.source_path,
-        workspace=workspace,
-        server_name=server_name,
-        transport=transport,
-        host=host,
-        port=port,
-        path=path,
-        tool_group=tool_group,
-    )
-    if transport == "stdio":
-        run_mcp_server(
-            workspace_root=workspace,
+        workspace = config.resolve_workspace(args.workspace)
+        server_name = args.name or server_settings.name
+        transport = args.transport or server_settings.transport
+        host = args.host or server_settings.host
+        port = args.port if args.port is not None else server_settings.port
+        path = args.path or server_settings.path
+        tool_group = args.tool_group or server_settings.tool_group
+        log_event(
+            logger,
+            "mcp_server_launch_config",
+            config_path=config.source_path,
+            workspace=workspace,
             server_name=server_name,
+            transport=transport,
+            host=host,
+            port=port,
+            path=path,
+            tool_group=tool_group,
+        )
+        if transport == "stdio":
+            run_mcp_server(
+                workspace_root=workspace,
+                server_name=server_name,
+                tool_group=tool_group,
+            )
+            return 0
+        run_jsonrpc_server(
+            workspace_root=workspace,
+            host=host,
+            port=port,
+            path=path,
             tool_group=tool_group,
         )
         return 0
-    run_jsonrpc_server(
-        workspace_root=workspace,
-        host=host,
-        port=port,
-        path=path,
-        tool_group=tool_group,
-    )
-    return 0
+    except KeyboardInterrupt:
+        return 130
+    except Exception as exc:  # noqa: BLE001
+        report = classify_exception(exc)
+        for line in human_error_lines(report):
+            print(line, file=sys.stderr)
+        return report.exit_code
 
 
 if __name__ == "__main__":

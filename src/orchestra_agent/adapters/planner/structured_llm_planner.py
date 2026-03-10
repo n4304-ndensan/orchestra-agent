@@ -17,6 +17,7 @@ from orchestra_agent.ports.llm_client import (
     LlmMessage,
 )
 from orchestra_agent.ports.planner import IPlanner
+from orchestra_agent.shared.error_handling import text_preview
 
 
 class StructuredLlmPlanner(IPlanner):
@@ -152,7 +153,11 @@ class StructuredLlmPlanner(IPlanner):
         start = stripped.find("{")
         end = stripped.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            raise ValueError("Structured LLM planner output is not valid JSON.")
+            preview = text_preview(stripped)
+            raise ValueError(
+                "Structured LLM planner output is not valid JSON. "
+                f"preview={preview}"
+            )
         return json.loads(stripped[start : end + 1])
 
     @staticmethod

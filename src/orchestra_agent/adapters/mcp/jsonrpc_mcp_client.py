@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -59,9 +60,28 @@ class JsonRpcMcpClient(IMcpClient):
             "method": method,
             "params": params,
         }
-        response = self._client.post(self._endpoint, json=payload)
-        response.raise_for_status()
-        body = response.json()
+        try:
+            response = self._client.post(self._endpoint, json=payload)
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"MCP endpoint request timed out for {method}: {self._endpoint}"
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                "MCP endpoint returned "
+                f"HTTP {exc.response.status_code} for {method}: {self._endpoint}"
+            ) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(
+                f"MCP endpoint request failed for {method}: {self._endpoint}"
+            ) from exc
+        try:
+            body = response.json()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"MCP endpoint returned invalid JSON for {method}: {self._endpoint}"
+            ) from exc
         if "error" in body:
             raise RuntimeError(f"MCP error for {method}: {body['error']}")
         result = body.get("result", {})

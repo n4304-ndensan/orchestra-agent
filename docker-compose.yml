@@ -3,11 +3,12 @@ x-mcp-server-env: &mcp-server-env
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
   ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
-  ORCHESTRA_MCP_LOG_LEVEL: ${ORCHESTRA_MCP_LOG_LEVEL:-DEBUG}
+  ORCHESTRA_MCP_LOG_LEVEL: ${ORCHESTRA_MCP_LOG_LEVEL:-INFO}
   PYTHONPATH: /workspace/project/src:/app/src
 
 x-mcp-runtime: &mcp-runtime
   working_dir: /workspace/project
+  init: true
   volumes:
     - ./:/workspace/project
     - ./workspace:/workspace/workspace
@@ -23,7 +24,7 @@ services:
     environment:
       <<: *mcp-server-env
     ports:
-      - "8010:8010"
+      - "${ORCHESTRA_PUBLISH_HOST:-127.0.0.1}:${ORCHESTRA_MCP_FILES_PORT:-8010}:8010"
     healthcheck:
       test:
         [
@@ -46,7 +47,7 @@ services:
     environment:
       <<: *mcp-server-env
     ports:
-      - "8020:8020"
+      - "${ORCHESTRA_PUBLISH_HOST:-127.0.0.1}:${ORCHESTRA_MCP_EXCEL_PORT:-8020}:8020"
     healthcheck:
       test:
         [
@@ -74,6 +75,7 @@ services:
         "/workspace/workspace",
       ]
     working_dir: /workspace/project
+    init: true
     volumes:
       - ./:/workspace/project
       - ./workspace:/workspace/workspace
@@ -82,7 +84,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       PYTHONPATH: /workspace/project/src:/app/src
     ports:
-      - "9000:9000"
+      - "${ORCHESTRA_PUBLISH_HOST:-127.0.0.1}:${ORCHESTRA_API_PORT:-9000}:9000"
     restart: unless-stopped
     depends_on:
       orchestra-mcp-files:
@@ -117,6 +119,7 @@ services:
         "/workspace/workspace",
       ]
     working_dir: /workspace/project
+    init: true
     volumes:
       - ./:/workspace/project
       - ./workspace:/workspace/workspace

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any
@@ -43,9 +44,25 @@ class OpenAILlmClient(ILlmClient):
 
     def generate(self, request: LlmGenerateRequest) -> str:
         payload = self._build_payload(request)
-        response = self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
-        response.raise_for_status()
-        return self._extract_message_text(response.json())
+        try:
+            response = self._client.post(f"{self._base_url}/v1/chat/completions", json=payload)
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(f"OpenAI request timed out for model '{self._model}'.") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                "OpenAI request failed with "
+                f"HTTP {exc.response.status_code} for model '{self._model}'."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"OpenAI request failed for model '{self._model}'.") from exc
+        try:
+            body = response.json()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"OpenAI response was not valid JSON for model '{self._model}'."
+            ) from exc
+        return self._extract_message_text(body)
 
     def close(self) -> None:
         self._client.close()

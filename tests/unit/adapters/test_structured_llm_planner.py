@@ -121,6 +121,7 @@ def test_structured_llm_planner_falls_back_when_response_is_invalid() -> None:
 
     assert plan.steps[0].step_id == "open_file"
     assert planner.last_warning is not None
+    assert "preview=not-json" in planner.last_warning
 
 
 def test_structured_llm_planner_accepts_ai_review_builtin_tool() -> None:

@@ -60,7 +60,9 @@ def test_xml_workflow_repository_save_and_load() -> None:
         repo.lock_workflow("wf-xml")
         assert repo.is_locked("wf-xml") is True
         assert any(event["event_type"] == "workflow_saved" for event in audit_logger.events)
-        saved = [event for event in audit_logger.events if event["event_type"] == "workflow_saved"][-1]
+        saved = [
+            event for event in audit_logger.events if event["event_type"] == "workflow_saved"
+        ][-1]
         assert saved["paths"]["version_xml"].endswith("workflow_v3.xml")
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -102,7 +104,9 @@ def test_filesystem_step_plan_repository_save_and_load() -> None:
         repo.lock_step_plan("wf-xml", "sp-filesystem")
         assert repo.is_locked("wf-xml", "sp-filesystem") is True
         assert any(event["event_type"] == "step_plan_saved" for event in audit_logger.events)
-        saved = [event for event in audit_logger.events if event["event_type"] == "step_plan_saved"][-1]
+        saved = [
+            event for event in audit_logger.events if event["event_type"] == "step_plan_saved"
+        ][-1]
         assert saved["paths"]["latest_json"].endswith("step_plan_latest.json")
     finally:
         shutil.rmtree(base, ignore_errors=True)

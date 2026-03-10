@@ -16,6 +16,14 @@ type LlmProviderName = Literal["none", "file", "openai", "google"]
 type PlannerMode = Literal["deterministic", "augmented", "full"]
 
 
+@dataclass(slots=True, frozen=True)
+class RuntimeMetadata:
+    app_version: str
+    llm_provider: LlmProviderName
+    planner_mode: PlannerMode
+    mcp_endpoints: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class RuntimeConfig:
     workspace: Path
@@ -46,8 +54,12 @@ class RuntimeConfig:
 
 @dataclass(slots=True)
 class RuntimeArtifacts:
+    workspace_root: Path
     workflow_root: Path
     plan_root: Path
+    snapshots_dir: Path
+    state_root: Path
+    audit_root: Path
 
     def workflow_path(self, workflow_id: str, version: int | None = None) -> Path:
         workflow_dir = self.workflow_root / workflow_id
@@ -79,6 +91,7 @@ class AppRuntime:
     llm_client: ILlmClient | None
     audit_logger: FilesystemAuditLogger
     artifacts: RuntimeArtifacts
+    metadata: RuntimeMetadata
     using_mock: bool
 
     def close(self) -> None:

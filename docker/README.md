@@ -21,6 +21,13 @@ Excel MCP:
 docker compose -f docker/mcp-excel-server/docker-compose.yml up --build -d
 ```
 
+Both standalone compose files honor the same environment variables as the root stack:
+
+- `ORCHESTRA_PUBLISH_HOST`
+- `ORCHESTRA_MCP_FILES_PORT`
+- `ORCHESTRA_MCP_EXCEL_PORT`
+- `ORCHESTRA_MCP_LOG_LEVEL`
+
 ## Add another isolated MCP server
 
 If you want a new independent MCP server container:

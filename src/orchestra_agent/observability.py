@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any
 from uuid import uuid4
 
 from orchestra_agent.ports import IAuditLogger, ILlmClient, IMcpClient, LlmGenerateRequest
 
-_observation_context: ContextVar[dict[str, Any]] = ContextVar(
+_observation_context: ContextVar[dict[str, Any] | None] = ContextVar(
     "orchestra_agent_observation_context",
-    default={},
+    default=None,
 )
 
 
 def current_observation_context() -> dict[str, Any]:
-    return dict(_observation_context.get())
+    current = _observation_context.get()
+    if current is None:
+        return {}
+    return dict(current)
 
 
 def enrich_observation_event(event: dict[str, Any]) -> dict[str, Any]:

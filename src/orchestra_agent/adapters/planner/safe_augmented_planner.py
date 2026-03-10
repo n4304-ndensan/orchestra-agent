@@ -18,6 +18,7 @@ from orchestra_agent.ports.llm_client import (
     LlmMessage,
 )
 from orchestra_agent.ports.planner import IPlanner
+from orchestra_agent.shared.error_handling import text_preview
 
 
 class IStepProposalProvider(Protocol):
@@ -108,7 +109,8 @@ class LlmStepProposalProvider(IStepProposalProvider):
         start = stripped.find("{")
         end = stripped.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            raise ValueError("LLM proposal is not valid JSON.")
+            preview = text_preview(stripped)
+            raise ValueError(f"LLM proposal is not valid JSON. preview={preview}")
 
         candidate = stripped[start : end + 1]
         return json.loads(candidate)

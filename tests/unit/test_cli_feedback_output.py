@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from orchestra_agent.adapters.db import FilesystemStepPlanRepository, XmlWorkflowRepository
 from orchestra_agent.cli import (
+    _artifact_paths_for_run,
     _print_approval_preview,
     _print_failure_preview,
     _print_feedback_replan_summary,
@@ -27,8 +28,12 @@ def test_feedback_summary_prints_regenerated_artifact_paths(capsys) -> None:
             workflow_repo=workflow_repo,
             step_plan_repo=step_plan_repo,
             artifacts=RuntimeArtifacts(
+                workspace_root=base,
                 workflow_root=base / "workflow",
                 plan_root=base / "plan",
+                snapshots_dir=base / ".orchestra_snapshots",
+                state_root=base / ".orchestra_state" / "runs",
+                audit_root=base / ".orchestra_state" / "audit",
             ),
         )
 
@@ -182,3 +187,41 @@ def test_failure_preview_prints_recovery_hint(capsys) -> None:
     assert "[failure] Run failed" in captured
     assert "error     boom" in captured
     assert "retry / no / feedback" in captured
+
+
+def test_failure_preview_prints_rate_limit_hint(capsys) -> None:
+    _print_failure_preview("Client error '429 Too Many Requests' for url 'https://example.com'")
+
+    captured = capsys.readouterr().out
+    assert "hint      LLM rate limit hit." in captured
+
+
+def test_artifact_paths_for_run_use_latest_versions() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        artifacts = RuntimeArtifacts(
+            workspace_root=base,
+            workflow_root=base / "workflow",
+            plan_root=base / "plan",
+            snapshots_dir=base / ".orchestra_snapshots",
+            state_root=base / ".orchestra_state" / "runs",
+            audit_root=base / ".orchestra_state" / "audit",
+        )
+
+        payload = _artifact_paths_for_run(
+            artifacts,
+            {
+                "run_id": "run-latest",
+                "workflow_id": "wf-latest",
+                "workflow_version": 3,
+                "step_plan_id": "sp-latest",
+                "step_plan_version": 3,
+            },
+        )
+
+        assert payload["workflow"].endswith("workflow_v3.xml")
+        assert payload["step_plan"].endswith("step_plan_v3.json")
+        assert payload["run_state"].endswith("run-latest.json")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

@@ -16,6 +16,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.mcp_client import IMcpClient
 from orchestra_agent.ports.step_executor import IStepExecutor
+from orchestra_agent.shared.error_handling import text_preview
 from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
 
 
@@ -188,7 +189,8 @@ class LlmStepExecutor(IStepExecutor):
         start = stripped.find("{")
         end = stripped.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            raise ValueError("LLM step executor output is not valid JSON.")
+            preview = text_preview(stripped)
+            raise ValueError(f"LLM step executor output is not valid JSON. preview={preview}")
         return json.loads(stripped[start : end + 1])
 
     def _apply_actions(

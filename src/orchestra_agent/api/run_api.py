@@ -41,13 +41,13 @@ class RunAPI:
             approval_status=ApprovalStatus.APPROVED if approved else ApprovalStatus.PENDING,
         )
         self._lock_completed_artifacts(state)
-        return self._serialize_state(state)
+        return serialize_run_state(state)
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         state = self._state_store.load(run_id)
         if state is None:
             raise KeyError(f"Run '{run_id}' not found.")
-        return self._serialize_state(state)
+        return serialize_run_state(state)
 
     def resume_run(self, run_id: str, approved: bool = True) -> dict[str, Any]:
         state = self._state_store.load(run_id)
@@ -76,7 +76,7 @@ class RunAPI:
             approval_status=approval_status,
         )
         self._lock_completed_artifacts(resumed)
-        return self._serialize_state(resumed)
+        return serialize_run_state(resumed)
 
     def respond_to_approval(
         self,
@@ -98,7 +98,7 @@ class RunAPI:
         state.current_step_id = None
         state.metadata.pop("approval_context", None)
         self._state_store.save(state)
-        return self._serialize_state(state)
+        return serialize_run_state(state)
 
     def submit_feedback(self, run_id: str, feedback: str) -> dict[str, Any]:
         state = self._state_store.load(run_id)
@@ -125,52 +125,11 @@ class RunAPI:
             run_id=run_id,
             feedback=feedback,
         )
-        return self._serialize_state(updated)
+        return serialize_run_state(updated)
 
     @staticmethod
     def _serialize_state(state: AgentState) -> dict[str, Any]:
-        pending_approval: dict[str, Any] | None = None
-        approval_context = state.metadata.get("approval_context")
-        if isinstance(approval_context, dict):
-            stage = approval_context.get("stage")
-            step_id = approval_context.get("step_id")
-            message = approval_context.get("message")
-            if isinstance(stage, str) and isinstance(step_id, str) and isinstance(message, str):
-                pending_approval = {
-                    "stage": stage,
-                    "step_id": step_id,
-                    "message": message,
-                }
-                details = approval_context.get("details")
-                if isinstance(details, list) and all(isinstance(item, str) for item in details):
-                    pending_approval["details"] = details
-
-        return {
-            "run_id": state.run_id,
-            "workflow_id": state.workflow_id,
-            "workflow_version": state.workflow_version,
-            "step_plan_id": state.step_plan_id,
-            "step_plan_version": state.step_plan_version,
-            "current_step_id": state.current_step_id,
-            "approval_status": state.approval_status.value,
-            "pending_approval": pending_approval,
-            "execution_history": [
-                {
-                    "step_id": record.step_id,
-                    "status": record.status.value,
-                    "started_at": record.started_at.isoformat(),
-                    "finished_at": record.finished_at.isoformat() if record.finished_at else None,
-                    "result": record.result,
-                    "error": record.error,
-                    "snapshot_ref": record.snapshot_ref,
-                    "metadata": record.metadata,
-                }
-                for record in state.execution_history
-            ],
-            "snapshot_refs": state.snapshot_refs,
-            "last_error": state.last_error,
-            "metadata": state.metadata,
-        }
+        return serialize_run_state(state)
 
     def _lock_completed_artifacts(self, state: AgentState) -> None:
         if state.workflow_id is None or state.step_plan_id is None:
@@ -195,3 +154,48 @@ class RunAPI:
 
         state.metadata["artifacts_locked"] = True
         self._state_store.save(state)
+
+
+def serialize_run_state(state: AgentState) -> dict[str, Any]:
+    pending_approval: dict[str, Any] | None = None
+    approval_context = state.metadata.get("approval_context")
+    if isinstance(approval_context, dict):
+        stage = approval_context.get("stage")
+        step_id = approval_context.get("step_id")
+        message = approval_context.get("message")
+        if isinstance(stage, str) and isinstance(step_id, str) and isinstance(message, str):
+            pending_approval = {
+                "stage": stage,
+                "step_id": step_id,
+                "message": message,
+            }
+            details = approval_context.get("details")
+            if isinstance(details, list) and all(isinstance(item, str) for item in details):
+                pending_approval["details"] = details
+
+    return {
+        "run_id": state.run_id,
+        "workflow_id": state.workflow_id,
+        "workflow_version": state.workflow_version,
+        "step_plan_id": state.step_plan_id,
+        "step_plan_version": state.step_plan_version,
+        "current_step_id": state.current_step_id,
+        "approval_status": state.approval_status.value,
+        "pending_approval": pending_approval,
+        "execution_history": [
+            {
+                "step_id": record.step_id,
+                "status": record.status.value,
+                "started_at": record.started_at.isoformat(),
+                "finished_at": record.finished_at.isoformat() if record.finished_at else None,
+                "result": record.result,
+                "error": record.error,
+                "snapshot_ref": record.snapshot_ref,
+                "metadata": record.metadata,
+            }
+            for record in state.execution_history
+        ],
+        "snapshot_refs": state.snapshot_refs,
+        "last_error": state.last_error,
+        "metadata": state.metadata,
+    }

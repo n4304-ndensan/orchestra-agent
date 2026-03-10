@@ -141,6 +141,25 @@ def test_control_plane_api_executes_real_http_excel_flow(
     _create_sales_workbook(workspace_dir / "sales.xlsx")
 
     with httpx.Client(base_url=control_plane_base_url, timeout=30.0) as client:
+        index_response = client.get("/")
+        assert index_response.status_code == 200
+        assert index_response.json()["service"]["name"] == "orchestra-agent"
+
+        health_response = client.get("/health")
+        assert health_response.status_code == 200
+        assert health_response.json()["runtime"]["planner_mode"] == "deterministic"
+        assert health_response.json()["runtime"]["mcp_mode"] == "live"
+
+        ready_response = client.get("/ready")
+        assert ready_response.status_code == 200
+        assert ready_response.json()["status"] == "ready"
+        assert ready_response.json()["checks"][0]["tool_count"] >= 1
+
+        system_response = client.get("/system")
+        assert system_response.status_code == 200
+        assert system_response.json()["storage"]["workspace_root"] == str(workspace_dir)
+        assert any(tool["name"] == "excel.save_file" for tool in system_response.json()["tools"])
+
         tools_response = client.get("/tools")
         assert tools_response.status_code == 200
         assert any(tool["name"] == "excel.save_file" for tool in tools_response.json()["tools"])

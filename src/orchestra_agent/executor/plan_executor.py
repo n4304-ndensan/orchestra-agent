@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Literal, cast
 
@@ -27,6 +26,7 @@ from orchestra_agent.ports import (
     ISnapshotManager,
     IStepExecutor,
 )
+from orchestra_agent.shared.preview import mapping_preview
 from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
 
 type ResolvedValue = dict[str, Any] | list[Any] | str | int | float | bool | None
@@ -536,7 +536,7 @@ class PlanExecutor:
             f"tool     {step.tool_ref}",
             f"what     {step.description}",
         ]
-        input_preview = cls._mapping_preview(normalized_input)
+        input_preview = mapping_preview(normalized_input)
         if input_preview:
             lines.append(f"input    {input_preview}")
         return lines
@@ -548,7 +548,7 @@ class PlanExecutor:
             f"tool     {step.tool_ref}",
             f"what     {step.description}",
         ]
-        result_preview = cls._mapping_preview(result)
+        result_preview = mapping_preview(result)
         if result_preview:
             lines.append(f"result   {result_preview}")
         return lines
@@ -559,37 +559,10 @@ class PlanExecutor:
         if step.description.strip():
             parts.append(step.description.strip())
         normalized_input = normalize_tool_input(step.tool_ref, step.resolved_input)
-        input_preview = cls._mapping_preview(normalized_input)
+        input_preview = mapping_preview(normalized_input)
         if input_preview:
             parts.append(input_preview)
         return " | ".join(parts) if parts else "-"
-
-    @classmethod
-    def _mapping_preview(cls, payload: dict[str, Any], max_items: int = 4) -> str:
-        if not payload:
-            return ""
-        parts: list[str] = []
-        keys = list(payload.keys())
-        for key in keys[:max_items]:
-            parts.append(f"{key}={cls._value_preview(payload[key])}")
-        remaining = len(keys) - max_items
-        if remaining > 0:
-            parts.append(f"+{remaining} more")
-        return ", ".join(parts)
-
-    @classmethod
-    def _value_preview(cls, value: Any) -> str:
-        if isinstance(value, dict):
-            return "{" + cls._mapping_preview(value, max_items=2) + "}"
-        if isinstance(value, list):
-            head = ", ".join(cls._value_preview(item) for item in value[:3])
-            if len(value) > 3:
-                head = f"{head}, +{len(value) - 3} more"
-            return f"[{head}]"
-        if isinstance(value, str):
-            sanitized = value.replace("\r", " ").replace("\n", " ").strip()
-            return sanitized if len(sanitized) <= 72 else f"{sanitized[:69]}..."
-        return json.dumps(value, ensure_ascii=False)
 
     def _apply_recovery_decision(self, state: AgentState, decision: RecoveryDecision) -> None:
         assert decision.workflow is not None

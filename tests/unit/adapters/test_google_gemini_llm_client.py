@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+import pytest
 
 from orchestra_agent.adapters.llm import GoogleGeminiLlmClient
 from orchestra_agent.ports import LlmAttachment, LlmGenerateRequest, LlmMessage
@@ -104,5 +105,23 @@ def test_google_gemini_llm_client_raises_on_missing_candidates() -> None:
             pass
         else:
             raise AssertionError("Expected RuntimeError")
+    finally:
+        client.close()
+
+
+def test_google_gemini_llm_client_wraps_http_status_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, request=request, json={"error": {"message": "rate limited"}})
+
+    client = GoogleGeminiLlmClient(
+        api_key="test-key",
+        model="gemini-2.5-flash",
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="HTTP 429"):
+            client.generate(
+                LlmGenerateRequest(messages=(LlmMessage(role="user", content="hello"),))
+            )
     finally:
         client.close()

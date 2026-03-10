@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any
@@ -43,12 +44,32 @@ class GoogleGeminiLlmClient(ILlmClient):
 
     def generate(self, request: LlmGenerateRequest) -> str:
         payload = self._build_payload(request)
-        response = self._client.post(
-            f"{self._base_url}/v1beta/models/{self._model}:generateContent",
-            json=payload,
-        )
-        response.raise_for_status()
-        return self._extract_text(response.json())
+        try:
+            response = self._client.post(
+                f"{self._base_url}/v1beta/models/{self._model}:generateContent",
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Google Gemini request timed out for model '{self._model}'."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                "Google Gemini request failed with "
+                f"HTTP {exc.response.status_code} for model '{self._model}'."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(
+                f"Google Gemini request failed for model '{self._model}'."
+            ) from exc
+        try:
+            body = response.json()
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Google Gemini response was not valid JSON for model '{self._model}'."
+            ) from exc
+        return self._extract_text(body)
 
     def close(self) -> None:
         self._client.close()

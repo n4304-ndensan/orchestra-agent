@@ -46,6 +46,39 @@ def test_llm_planner_supports_japanese_objective() -> None:
     assert plan.step_map()["save_file"].resolved_input["output"] == "summary.xlsx"
 
 
+def test_llm_planner_generates_cell_write_plan_for_workbook_creation() -> None:
+    workflow = Workflow(
+        workflow_id="wf-hello",
+        name="HelloWorld workbook",
+        version=1,
+        objective=(
+            "output/HelloWorld.xlsx を作成し、"
+            "Sheet1 の A1 に HelloWorld と書き込んで保存して"
+        ),
+    )
+    planner = LlmPlanner()
+    plan = planner.compile_step_plan(workflow)
+
+    assert [step.step_id for step in plan.ordered_steps()] == [
+        "create_excel_file",
+        "write_cells",
+        "save_file",
+    ]
+    assert plan.step_map()["create_excel_file"].resolved_input == {
+        "file": "output/HelloWorld.xlsx",
+        "sheet": "Sheet1",
+    }
+    assert plan.step_map()["write_cells"].resolved_input == {
+        "file": "output/HelloWorld.xlsx",
+        "sheet": "Sheet1",
+        "cells": {"A1": "HelloWorld"},
+    }
+    assert plan.step_map()["save_file"].resolved_input == {
+        "file": "output/HelloWorld.xlsx",
+        "output": "output/HelloWorld.xlsx",
+    }
+
+
 def test_default_policy_engine_returns_pending_for_high_risk_step() -> None:
     plan = StepPlan(
         step_plan_id="sp-1",

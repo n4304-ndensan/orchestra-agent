@@ -1,0 +1,36 @@
+from __future__ import annotations
+
+from orchestra_agent.cli import _normalize_cli_argv, _parse_feedback_input, build_parser
+from orchestra_agent.config import AppConfig
+
+
+def test_normalize_cli_argv_preserves_explicit_subcommand() -> None:
+    assert _normalize_cli_argv(["status", "run-1"]) == ["status", "run-1"]
+
+
+def test_normalize_cli_argv_wraps_legacy_invocation_as_run() -> None:
+    assert _normalize_cli_argv(["objective text"]) == ["run", "objective text"]
+    assert _normalize_cli_argv(["--workflow-xml", "workflow.xml"]) == [
+        "run",
+        "--workflow-xml",
+        "workflow.xml",
+    ]
+
+
+def test_build_parser_registers_product_subcommands() -> None:
+    parser = build_parser(AppConfig())
+
+    subparsers = [
+        action
+        for action in parser._actions  # noqa: SLF001
+        if action.__class__.__name__ == "_SubParsersAction"
+    ]
+
+    assert len(subparsers) == 1
+    assert {"run", "plan", "resume", "status"} <= set(subparsers[0].choices)
+
+
+def test_parse_feedback_input_supports_inline_messages() -> None:
+    assert _parse_feedback_input("feedback output pathを修正") == "output pathを修正"
+    assert _parse_feedback_input("f write A1 instead") == "write A1 instead"
+    assert _parse_feedback_input("yes") is None
