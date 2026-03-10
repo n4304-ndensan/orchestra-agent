@@ -252,8 +252,28 @@ def build_tool_registry(workspace_root: Path, tool_group: ToolGroup = "all") -> 
                 )
             },
         )
+        registry.register(
+            "fs_copy_file",
+            "Copy a file within the workspace.",
+            lambda args: {
+                "copied": file_service.copy_file(
+                    source_path=str(args["source"]),
+                    destination_path=str(args["destination"]),
+                    overwrite=bool(args.get("overwrite", False)),
+                )
+            },
+        )
 
     if tool_group in ("all", "excel"):
+        registry.register(
+            "excel.create_file",
+            "Create a new Excel workbook file under the workspace.",
+            lambda args: excel_service.create_file(
+                path=str(args["file"]),
+                sheet=str(args.get("sheet", "Sheet1")),
+                overwrite=bool(args.get("overwrite", False)),
+            ),
+        )
         registry.register(
             "excel.open_file",
             "Open an Excel workbook and return its sheet metadata.",

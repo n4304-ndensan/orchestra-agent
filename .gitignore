@@ -18,3 +18,10 @@ wheels/
 .tmp-tests/
 .orchestra_snapshots/
 .env
+
+# Workspace runtime artifacts
+workspace/.certs/
+workspace/.orchestra_snapshots/
+workspace/.orchestra_state/
+workspace/plan/
+workspace/workflow/

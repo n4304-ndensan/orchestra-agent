@@ -5,6 +5,8 @@ from pathlib import Path
 
 from orchestra_agent.domain.serialization import workflow_to_xml_root
 from orchestra_agent.domain.workflow import ReplanContext, Workflow
+from orchestra_agent.observability import enrich_observation_event
+from orchestra_agent.ports.audit_logger import IAuditLogger
 from orchestra_agent.ports.workflow_repository import IWorkflowRepository
 
 
@@ -21,8 +23,9 @@ class XmlWorkflowRepository(IWorkflowRepository):
 
     _lock_file_name = "workflow.lock"
 
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, audit_logger: IAuditLogger | None = None) -> None:
         self._root_dir = root_dir
+        self._audit_logger = audit_logger
         self._root_dir.mkdir(parents=True, exist_ok=True)
 
     def save(self, workflow: Workflow) -> None:
@@ -36,16 +39,34 @@ class XmlWorkflowRepository(IWorkflowRepository):
         versions_dir.mkdir(parents=True, exist_ok=True)
         feedback_dir.mkdir(parents=True, exist_ok=True)
 
-        self._write_workflow_xml(workflow, workflow_dir / "workflow.xml")
-        self._write_workflow_xml(
-            workflow,
-            versions_dir / f"workflow_v{workflow.version}.xml",
-        )
+        latest_path = workflow_dir / "workflow.xml"
+        version_path = versions_dir / f"workflow_v{workflow.version}.xml"
 
+        self._write_workflow_xml(workflow, latest_path)
+        self._write_workflow_xml(workflow, version_path)
+
+        feedback_path: Path | None = None
         if workflow.feedback_history:
             latest_feedback = workflow.feedback_history[-1]
             feedback_path = feedback_dir / f"feedback_v{workflow.version}.txt"
             feedback_path.write_text(latest_feedback, encoding="utf-8")
+        if self._audit_logger is not None:
+            paths = {
+                "latest_xml": str(latest_path),
+                "version_xml": str(version_path),
+            }
+            if feedback_path is not None:
+                paths["feedback"] = str(feedback_path)
+            self._audit_logger.record(
+                enrich_observation_event(
+                    {
+                        "event_type": "workflow_saved",
+                        "workflow_id": workflow.workflow_id,
+                        "workflow_version": workflow.version,
+                        "paths": paths,
+                    }
+                )
+            )
 
     def get(self, workflow_id: str, version: int | None = None) -> Workflow | None:
         workflow_dir = self._root_dir / workflow_id
@@ -79,6 +100,12 @@ class XmlWorkflowRepository(IWorkflowRepository):
     def is_locked(self, workflow_id: str) -> bool:
         lock_path = self._root_dir / workflow_id / self._lock_file_name
         return lock_path.is_file()
+
+    def workflow_path(self, workflow_id: str, version: int | None = None) -> Path:
+        workflow_dir = self._root_dir / workflow_id
+        if version is None:
+            return workflow_dir / "workflow.xml"
+        return workflow_dir / "versions" / f"workflow_v{version}.xml"
 
     @staticmethod
     def _write_workflow_xml(workflow: Workflow, path: Path) -> None:

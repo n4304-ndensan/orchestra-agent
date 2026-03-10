@@ -4,7 +4,11 @@ import shutil
 from pathlib import Path
 from uuid import uuid4
 
-from orchestra_agent.adapters.db import FilesystemStepPlanRepository, XmlWorkflowRepository
+from orchestra_agent.adapters.db import (
+    FilesystemStepPlanRepository,
+    InMemoryAuditLogger,
+    XmlWorkflowRepository,
+)
 from orchestra_agent.domain import BackupScope, ReplanContext, Step, StepPlan, Workflow
 
 
@@ -12,7 +16,8 @@ def test_xml_workflow_repository_save_and_load() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
     try:
-        repo = XmlWorkflowRepository(base / "workflow")
+        audit_logger = InMemoryAuditLogger()
+        repo = XmlWorkflowRepository(base / "workflow", audit_logger=audit_logger)
         workflow = Workflow(
             workflow_id="wf-xml",
             name="Excel summary",
@@ -54,6 +59,9 @@ def test_xml_workflow_repository_save_and_load() -> None:
 
         repo.lock_workflow("wf-xml")
         assert repo.is_locked("wf-xml") is True
+        assert any(event["event_type"] == "workflow_saved" for event in audit_logger.events)
+        saved = [event for event in audit_logger.events if event["event_type"] == "workflow_saved"][-1]
+        assert saved["paths"]["version_xml"].endswith("workflow_v3.xml")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -62,7 +70,8 @@ def test_filesystem_step_plan_repository_save_and_load() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
     try:
-        repo = FilesystemStepPlanRepository(base / "plan")
+        audit_logger = InMemoryAuditLogger()
+        repo = FilesystemStepPlanRepository(base / "plan", audit_logger=audit_logger)
         step = Step(
             step_id="open_file",
             name="open",
@@ -92,5 +101,8 @@ def test_filesystem_step_plan_repository_save_and_load() -> None:
 
         repo.lock_step_plan("wf-xml", "sp-filesystem")
         assert repo.is_locked("wf-xml", "sp-filesystem") is True
+        assert any(event["event_type"] == "step_plan_saved" for event in audit_logger.events)
+        saved = [event for event in audit_logger.events if event["event_type"] == "step_plan_saved"][-1]
+        assert saved["paths"]["latest_json"].endswith("step_plan_latest.json")
     finally:
         shutil.rmtree(base, ignore_errors=True)

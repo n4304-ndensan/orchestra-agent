@@ -71,6 +71,21 @@ def test_excel_service_reads_sums_writes_and_exports(workspace_dir: Path) -> Non
         exported_workbook.close()
 
 
+def test_excel_service_creates_new_workbook_file(workspace_dir: Path) -> None:
+    service = ExcelWorkspaceService(workspace_dir)
+
+    created = service.create_file("output/new_report.xlsx", sheet="Data")
+
+    assert created["file"] == "output/new_report.xlsx"
+    assert created["sheet_names"] == ["Data"]
+    assert created["created"] is True
+    assert created["overwritten"] is False
+    assert (workspace_dir / "output" / "new_report.xlsx").is_file()
+
+    opened = service.open_file("output/new_report.xlsx")
+    assert opened["sheet_names"] == ["Data"]
+
+
 def test_excel_service_reads_specific_cells_and_greps_content(workspace_dir: Path) -> None:
     workbook_path = workspace_dir / "instructions.xlsx"
 

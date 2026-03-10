@@ -39,7 +39,7 @@ port = 9000
 [llm]
 # Set to "openai" or "google" for full AI-controlled planning and MCP runtime orchestration.
 provider = "google"
-planner_mode = "deterministic"
+planner_mode = "full"
 openai_model = "gpt-4.1-mini"
 openai_api_key_env = "OPENAI_API_KEY"
 openai_base_url = "https://api.openai.com"
@@ -49,6 +49,7 @@ google_api_key_env = "GEMINI_API_KEY"
 google_base_url = "https://generativelanguage.googleapis.com"
 google_timeout = 60.0
 tls_verify = true
+tls_ca_bundle = "./workspace/.certs/company.crt"
 # For company TLS inspection environments, set your corporate CA bundle path.
 # Example: tls_ca_bundle = "./certs/company.crt"
 # tls_ca_bundle = "./certs/company.crt"

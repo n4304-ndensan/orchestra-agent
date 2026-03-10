@@ -95,6 +95,8 @@ class RunAPI:
             return self.resume_run(run_id=run_id, approved=True)
 
         state.approval_status = ApprovalStatus.REJECTED
+        state.current_step_id = None
+        state.metadata.pop("approval_context", None)
         self._state_store.save(state)
         return self._serialize_state(state)
 
@@ -139,6 +141,9 @@ class RunAPI:
                     "step_id": step_id,
                     "message": message,
                 }
+                details = approval_context.get("details")
+                if isinstance(details, list) and all(isinstance(item, str) for item in details):
+                    pending_approval["details"] = details
 
         return {
             "run_id": state.run_id,

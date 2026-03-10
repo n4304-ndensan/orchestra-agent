@@ -54,8 +54,11 @@ def test_build_llm_provider_requires_google_api_key(monkeypatch: pytest.MonkeyPa
 
 def test_build_llm_provider_passes_tls_ca_bundle_to_openai(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    ca_bundle = tmp_path / "company.crt"
+    ca_bundle.write_text("dummy-cert", encoding="utf-8")
 
     captured: dict[str, Any] = {}
 
@@ -89,10 +92,30 @@ def test_build_llm_provider_passes_tls_ca_bundle_to_openai(
             audit_root=Path(".orchestra_state/audit"),
             llm_provider="openai",
             llm_tls_verify=True,
-            llm_tls_ca_bundle=Path("certs/company.crt"),
+            llm_tls_ca_bundle=ca_bundle,
         )
     )
 
     assert isinstance(provider, LlmStepProposalProvider)
     assert isinstance(client, DummyOpenAILlmClient)
-    assert Path(str(captured["verify"])) == Path("certs/company.crt")
+    assert Path(str(captured["verify"])) == ca_bundle
+
+
+def test_build_llm_provider_rejects_missing_tls_ca_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    with pytest.raises(ValueError, match="LLM TLS CA bundle was not found"):
+        _build_llm_provider(
+            RuntimeConfig(
+                workspace=Path("."),
+                workflow_root=Path("workflow"),
+                plan_root=Path("plan"),
+                snapshots_dir=Path(".orchestra_snapshots"),
+                state_root=Path(".orchestra_state/runs"),
+                audit_root=Path(".orchestra_state/audit"),
+                llm_provider="openai",
+                llm_tls_ca_bundle=Path("missing-ca.crt"),
+            )
+        )

@@ -176,6 +176,43 @@ class ExcelWorkspaceService:
         finally:
             workbook.close()
 
+    def create_file(
+        self,
+        path: str,
+        sheet: str = "Sheet1",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        workbook_path = self._resolve_path_inside_workspace(path)
+        self._validate_workbook_extension(path, workbook_path)
+
+        sheet_name = sheet.strip()
+        if not sheet_name:
+            raise ValueError("sheet must be a non-empty worksheet name.")
+
+        existed = workbook_path.exists()
+        if existed:
+            if workbook_path.is_dir():
+                raise IsADirectoryError(f"Workbook path '{path}' is not a file.")
+            if not overwrite:
+                raise FileExistsError(
+                    f"Workbook '{path}' already exists. Set overwrite=True to replace it."
+                )
+
+        workbook_path.parent.mkdir(parents=True, exist_ok=True)
+        workbook = self._new_workbook()
+        try:
+            workbook.active.title = sheet_name
+            workbook.save(workbook_path)
+        finally:
+            workbook.close()
+
+        return {
+            "file": workbook_path.relative_to(self._workspace_root).as_posix(),
+            "sheet_names": [sheet_name],
+            "created": True,
+            "overwritten": existed,
+        }
+
     def create_sheet(self, path: str, sheet: str, overwrite: bool = False) -> dict[str, Any]:
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=False)
@@ -308,8 +345,7 @@ class ExcelWorkspaceService:
         workbook_path = self._resolve_path_inside_workspace(relative_path)
         if not workbook_path.exists():
             raise FileNotFoundError(f"Workbook '{relative_path}' does not exist.")
-        if workbook_path.suffix.lower() != ".xlsx":
-            raise ValueError(f"Workbook '{relative_path}' must be an .xlsx file.")
+        self._validate_workbook_extension(relative_path, workbook_path)
         if not workbook_path.is_file():
             raise IsADirectoryError(f"Workbook path '{relative_path}' is not a file.")
         return workbook_path
@@ -382,6 +418,22 @@ class ExcelWorkspaceService:
                 "`pip install \"orchestra-agent[mcp-server]\"`."
             ) from exc
         return load_workbook(filename=path, data_only=data_only)
+
+    @staticmethod
+    def _new_workbook() -> Any:
+        try:
+            from openpyxl import Workbook  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "Missing dependency 'openpyxl'. Install optional extras with "
+                "`pip install \"orchestra-agent[mcp-server]\"`."
+            ) from exc
+        return Workbook()
+
+    @staticmethod
+    def _validate_workbook_extension(path_label: str, workbook_path: Path) -> None:
+        if workbook_path.suffix.lower() != ".xlsx":
+            raise ValueError(f"Workbook '{path_label}' must be an .xlsx file.")
 
     def _load_image_refs(
         self,

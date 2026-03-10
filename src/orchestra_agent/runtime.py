@@ -33,6 +33,7 @@ from orchestra_agent.application.use_cases import (
     ExecutePlanUseCase,
 )
 from orchestra_agent.executor import FailureHandler, PlanExecutor
+from orchestra_agent.observability import LoggingLlmClient, LoggingMcpClient
 from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
 
 type LlmProviderName = Literal["none", "file", "openai", "google"]
@@ -106,22 +107,31 @@ def resolve_file_arg(value: str, workspace: Path) -> Path:
 
 
 def build_runtime(config: RuntimeConfig) -> AppRuntime:
-    workflow_repo = XmlWorkflowRepository(config.workflow_root)
-    step_plan_repo = FilesystemStepPlanRepository(config.plan_root)
     state_store = FilesystemAgentStateStore(config.state_root)
     audit_logger = FilesystemAuditLogger(config.audit_root)
+    workflow_repo = XmlWorkflowRepository(config.workflow_root, audit_logger=audit_logger)
+    step_plan_repo = FilesystemStepPlanRepository(config.plan_root, audit_logger=audit_logger)
 
     endpoints = _normalize_mcp_endpoints(config.mcp_endpoints, config.mcp_endpoint)
     using_mock = not endpoints
     if using_mock:
-        mcp_client: IMcpClient = MockExcelMcpClient()
+        raw_mcp_client: IMcpClient = MockExcelMcpClient()
     elif len(endpoints) == 1:
-        mcp_client = JsonRpcMcpClient(endpoint=endpoints[0])
+        raw_mcp_client = JsonRpcMcpClient(endpoint=endpoints[0])
     else:
-        mcp_client = MultiEndpointMcpClient(endpoints=endpoints)
+        raw_mcp_client = MultiEndpointMcpClient(endpoints=endpoints)
+    mcp_client: IMcpClient = LoggingMcpClient(raw_mcp_client, audit_logger)
 
     base_planner = LlmPlanner()
     proposal_provider, llm_client = _build_llm_provider(config)
+    if llm_client is not None:
+        llm_client = LoggingLlmClient(llm_client, audit_logger)
+    if isinstance(proposal_provider, LlmStepProposalProvider) and llm_client is not None:
+        proposal_provider = LlmStepProposalProvider(
+            llm_client=llm_client,
+            temperature=config.llm_temperature,
+            max_tokens=config.llm_max_tokens,
+        )
     planner_mode = _resolve_planner_mode(config)
     if planner_mode == "full" and llm_client is not None:
         planner: IPlanner = StructuredLlmPlanner(
@@ -151,6 +161,7 @@ def build_runtime(config: RuntimeConfig) -> AppRuntime:
             workspace_root=config.workspace,
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
+            audit_logger=audit_logger,
         )
 
     compile_uc = CompileStepPlanUseCase(planner, policy_engine, step_plan_repo, audit_logger)
@@ -207,6 +218,12 @@ def _build_llm_provider(
 
     verify: bool | str = config.llm_tls_verify
     if config.llm_tls_ca_bundle is not None:
+        if not config.llm_tls_ca_bundle.is_file():
+            raise ValueError(
+                "LLM TLS CA bundle was not found: "
+                f"'{config.llm_tls_ca_bundle}'. "
+                "Set llm.tls_ca_bundle to an existing certificate file path."
+            )
         verify = str(config.llm_tls_ca_bundle)
 
     if config.llm_provider == "openai":

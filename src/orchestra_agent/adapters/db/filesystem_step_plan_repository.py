@@ -9,6 +9,8 @@ from orchestra_agent.domain.enums import BackupScope, RiskLevel
 from orchestra_agent.domain.serialization import step_plan_to_dict
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
+from orchestra_agent.observability import enrich_observation_event
+from orchestra_agent.ports.audit_logger import IAuditLogger
 from orchestra_agent.ports.step_plan_repository import IStepPlanRepository
 
 
@@ -26,8 +28,9 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
 
     _lock_file_name = "step_plan.lock"
 
-    def __init__(self, root_dir: Path) -> None:
+    def __init__(self, root_dir: Path, audit_logger: IAuditLogger | None = None) -> None:
         self._root_dir = root_dir
+        self._audit_logger = audit_logger
         self._root_dir.mkdir(parents=True, exist_ok=True)
 
     def save(self, step_plan: StepPlan) -> None:
@@ -49,6 +52,23 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
         latest_json.write_text(json_text, encoding="utf-8")
         self._write_xml(step_plan, version_xml)
         self._write_xml(step_plan, latest_xml)
+        if self._audit_logger is not None:
+            self._audit_logger.record(
+                enrich_observation_event(
+                    {
+                        "event_type": "step_plan_saved",
+                        "workflow_id": step_plan.workflow_id,
+                        "step_plan_id": step_plan.step_plan_id,
+                        "step_plan_version": step_plan.version,
+                        "paths": {
+                            "version_json": str(version_json),
+                            "latest_json": str(latest_json),
+                            "version_xml": str(version_xml),
+                            "latest_xml": str(latest_xml),
+                        },
+                    }
+                )
+            )
 
     def get(self, step_plan_id: str, version: int | None = None) -> StepPlan | None:
         if version is not None:
@@ -84,6 +104,28 @@ class FilesystemStepPlanRepository(IStepPlanRepository):
 
     def _plan_dir(self, workflow_id: str, step_plan_id: str) -> Path:
         return self._root_dir / workflow_id / step_plan_id
+
+    def step_plan_json_path(
+        self,
+        workflow_id: str,
+        step_plan_id: str,
+        version: int | None = None,
+    ) -> Path:
+        plan_dir = self._plan_dir(workflow_id, step_plan_id)
+        if version is None:
+            return plan_dir / "step_plan_latest.json"
+        return plan_dir / f"step_plan_v{version}.json"
+
+    def step_plan_xml_path(
+        self,
+        workflow_id: str,
+        step_plan_id: str,
+        version: int | None = None,
+    ) -> Path:
+        plan_dir = self._plan_dir(workflow_id, step_plan_id)
+        if version is None:
+            return plan_dir / "step_plan_latest.xml"
+        return plan_dir / f"step_plan_v{version}.xml"
 
     @staticmethod
     def _write_xml(step_plan: StepPlan, path: Path) -> None:

@@ -87,6 +87,8 @@ def _rewrite_plan_file_paths(plan_file: Path, output_file: Path, plan: StepPlan)
 def _build_use_case(
     base: Path,
     mcp_client: FakeExcelMcpClient,
+    *,
+    max_replans: int = 1,
 ) -> tuple[ExecutePlanUseCase, Workflow, StepPlan]:
     source_file = base / "sales.xlsx"
     output_file = base / "summary.xlsx"
@@ -118,7 +120,7 @@ def _build_use_case(
         step_plan_repository=step_plan_repo,
         audit_logger=audit_logger,
         workflow_repository=workflow_repo,
-        max_replans=1,
+        max_replans=max_replans,
     )
     executor = PlanExecutor(
         mcp_client=mcp_client,
@@ -381,6 +383,11 @@ def test_plan_executor_respects_explicit_requires_approval_on_low_risk_step() ->
             approval_status=ApprovalStatus.PENDING,
         )
         assert state.metadata["approval_context"]["stage"] == "PLAN"
+        assert "details" in state.metadata["approval_context"]
+        assert any(
+            isinstance(line, str) and "open_file" in line
+            for line in state.metadata["approval_context"]["details"]
+        )
 
         state = use_case.execute(
             workflow=workflow,
@@ -390,6 +397,10 @@ def test_plan_executor_respects_explicit_requires_approval_on_low_risk_step() ->
         )
         assert state.metadata["approval_context"]["stage"] == "PRE_STEP"
         assert state.metadata["approval_context"]["step_id"] == "open_file"
+        assert any(
+            isinstance(line, str) and "tool" in line
+            for line in state.metadata["approval_context"]["details"]
+        )
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -449,5 +460,115 @@ def test_plan_executor_skips_plan_review_when_plan_has_no_runtime_approval() -> 
         assert state.current_step_id is None
         assert len(state.execution_history) == 6
         assert state.metadata.get("approval_context") is None
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_plan_executor_accepts_feedback_during_plan_review() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        execute_use_case, workflow, plan = _build_use_case(base, FakeExcelMcpClient())
+
+        state = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-plan-feedback",
+            approval_status=ApprovalStatus.PENDING,
+        )
+        context = state.metadata.get("approval_context")
+        assert isinstance(context, dict)
+        assert context.get("stage") == "PLAN"
+
+        updated = execute_use_case.apply_feedback(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-plan-feedback",
+            feedback="save_file の output 名を output/HelloWorld.xlsx にしてください",
+        )
+
+        assert updated.workflow_version == 2
+        assert updated.step_plan_version == 2
+        assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.metadata.get("feedback_step_id") == "plan"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_plan_executor_accepts_feedback_during_pre_step_review() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        execute_use_case, workflow, plan = _build_use_case(base, FakeExcelMcpClient())
+
+        _ = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-pre-feedback",
+            approval_status=ApprovalStatus.PENDING,
+        )
+        paused_pre = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-pre-feedback",
+            approval_status=ApprovalStatus.APPROVED,
+        )
+        context = paused_pre.metadata.get("approval_context")
+        assert isinstance(context, dict)
+        assert context.get("stage") == "PRE_STEP"
+        assert context.get("step_id") == "save_file"
+
+        updated = execute_use_case.apply_feedback(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-pre-feedback",
+            feedback="save_file 前に別シートのチェック step を追加して",
+        )
+
+        assert updated.workflow_version == 2
+        assert updated.step_plan_version == 2
+        assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.metadata.get("feedback_step_id") == "save_file"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_plan_executor_accepts_feedback_after_failure_without_approval_context() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        execute_use_case, workflow, plan = _build_use_case(
+            base,
+            FakeExcelMcpClient(fail_tools={"excel.open_file"}),
+            max_replans=0,
+        )
+
+        _ = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-failed-feedback",
+            approval_status=ApprovalStatus.PENDING,
+        )
+        failed = execute_use_case.execute(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-failed-feedback",
+            approval_status=ApprovalStatus.APPROVED,
+        )
+        assert failed.approval_status == ApprovalStatus.REJECTED
+        assert failed.metadata.get("approval_context") is None
+        assert failed.last_error is not None
+
+        updated = execute_use_case.apply_feedback(
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-failed-feedback",
+            feedback="open_file の入力パスが誤っているので修正して",
+        )
+
+        assert updated.workflow_version == 2
+        assert updated.step_plan_version == 2
+        assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.metadata.get("feedback_step_id") == "open_file"
     finally:
         shutil.rmtree(base, ignore_errors=True)

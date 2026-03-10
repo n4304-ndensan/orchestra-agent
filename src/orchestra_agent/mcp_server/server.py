@@ -133,6 +133,16 @@ def _register_file_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
         result = file_service.write_text(path, content, overwrite=overwrite, encoding=encoding)
         return {"written": result}
 
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def fs_copy_file(
+        source: str,
+        destination: str,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Copy a file within the workspace."""
+        copied = file_service.copy_file(source, destination, overwrite=overwrite)
+        return {"copied": copied}
+
 
 def _register_server_ping(mcp: Any) -> None:
     @mcp.tool()  # type: ignore[untyped-decorator]
@@ -197,6 +207,15 @@ def _register_excel_read_tools(mcp: Any, excel_service: ExcelWorkspaceService) -
 
 
 def _register_excel_write_tools(mcp: Any, excel_service: ExcelWorkspaceService) -> None:
+    @mcp.tool()  # type: ignore[untyped-decorator]
+    def excel_create_file(
+        file: str,
+        sheet: str = "Sheet1",
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new Excel workbook file under the workspace."""
+        return excel_service.create_file(file, sheet=sheet, overwrite=overwrite)
+
     @mcp.tool()  # type: ignore[untyped-decorator]
     def excel_create_sheet(file: str, sheet: str, overwrite: bool = False) -> dict[str, Any]:
         """Create a worksheet inside an existing workbook."""

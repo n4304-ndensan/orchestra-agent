@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,39 @@ class WorkspaceFileService:
         return {
             "path": target.relative_to(self._workspace_root).as_posix(),
             "bytes": target.stat().st_size,
+        }
+
+    def copy_file(
+        self,
+        source_path: str,
+        destination_path: str,
+        *,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        source = self._resolve_within_workspace(source_path)
+        destination = self._resolve_within_workspace(destination_path)
+
+        if source == destination:
+            raise ValueError("source_path and destination_path must be different.")
+        if not source.exists():
+            raise FileNotFoundError(f"File '{source_path}' does not exist.")
+        if not source.is_file():
+            raise IsADirectoryError(f"Path '{source_path}' is not a file.")
+        if destination.exists():
+            if destination.is_dir():
+                raise IsADirectoryError(f"Path '{destination_path}' is a directory.")
+            if not overwrite:
+                raise FileExistsError(
+                    f"File '{destination_path}' already exists. "
+                    "Set overwrite=True to replace it."
+                )
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        return {
+            "source": source.relative_to(self._workspace_root).as_posix(),
+            "destination": destination.relative_to(self._workspace_root).as_posix(),
+            "bytes": destination.stat().st_size,
         }
 
     def _resolve_within_workspace(self, relative_path: str) -> Path:

@@ -23,6 +23,10 @@ class MockExcelMcpClient(IMcpClient):
     def describe_tools(self) -> list[dict[str, str]]:
         return [
             {
+                "name": "excel.create_file",
+                "description": "Create a new Excel workbook file.",
+            },
+            {
                 "name": "excel.open_file",
                 "description": "Open an Excel workbook and inspect its sheets.",
             },
@@ -76,6 +80,7 @@ class MockExcelMcpClient(IMcpClient):
 
     def _tool_handlers(self) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
         return {
+            "excel.create_file": self._create_file,
             "excel.open_file": self._open_file,
             "excel.read_sheet": self._read_sheet,
             "excel.read_cells": self._read_cells,
@@ -86,6 +91,19 @@ class MockExcelMcpClient(IMcpClient):
             "excel.list_images": self._list_images,
             "excel.extract_image": self._extract_image,
             "excel.save_file": self._save_file,
+        }
+
+    @staticmethod
+    def _create_file(input: dict[str, Any]) -> dict[str, Any]:
+        file_path = Path(str(input["file"]))
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text("mock workbook placeholder", encoding="utf-8")
+        sheet = str(input.get("sheet", "Sheet1"))
+        return {
+            "file": str(file_path),
+            "sheet_names": [sheet],
+            "created": True,
+            "overwritten": False,
         }
 
     @staticmethod

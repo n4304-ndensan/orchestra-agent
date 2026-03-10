@@ -6,9 +6,11 @@ from uuid import uuid4
 
 import pytest
 
+from orchestra_agent.adapters import InMemoryAuditLogger
 from orchestra_agent.adapters.execution import LlmStepExecutor
 from orchestra_agent.domain import Step, Workflow
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
+from orchestra_agent.observability import bind_observation_context
 from orchestra_agent.ports import LlmGenerateRequest
 
 
@@ -71,7 +73,8 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
                 """
             ]
         )
-        executor = LlmStepExecutor(client, workspace_root=base)
+        audit_logger = InMemoryAuditLogger()
+        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
         workflow = Workflow(
             workflow_id="wf-1",
             name="Workspace summary",
@@ -90,13 +93,14 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
         )
         mcp_client = FakeMcpClient()
 
-        result = executor.execute(
-            workflow=workflow,
-            step=step,
-            resolved_input=step.resolved_input,
-            step_results={},
-            mcp_client=mcp_client,
-        )
+        with bind_observation_context(run_id="run-1", step_id=step.step_id):
+            result = executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=step.resolved_input,
+                step_results={},
+                mcp_client=mcp_client,
+            )
 
         assert result == {"status": "ok"}
         assert (base / "reports" / "summary.txt").read_text(encoding="utf-8") == "done"
@@ -107,6 +111,11 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
         assert '"description": "Read worksheet rows as dictionaries keyed by column letters."' in (
             client.requests[0].messages[1].content
         )
+        file_write_event = [
+            event for event in audit_logger.events if event["event_type"] == "workspace_file_written"
+        ][-1]
+        assert file_write_event["run_id"] == "run-1"
+        assert file_write_event["path"].endswith("reports\\summary.txt")
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -140,7 +149,8 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
                 """,
             ]
         )
-        executor = LlmStepExecutor(client, workspace_root=base)
+        audit_logger = InMemoryAuditLogger()
+        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
         workflow = Workflow(
             workflow_id="wf-1",
             name="Workspace summary",
@@ -155,18 +165,24 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
             resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
         )
 
-        result = executor.execute(
-            workflow=workflow,
-            step=step,
-            resolved_input=step.resolved_input,
-            step_results={},
-            mcp_client=FakeMcpClient(),
-        )
+        with bind_observation_context(run_id="run-attach", step_id=step.step_id):
+            result = executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=step.resolved_input,
+                step_results={},
+                mcp_client=FakeMcpClient(),
+            )
 
         assert result == {"status": "used-attachment"}
         assert len(client.requests) == 2
         assert client.requests[0].messages[1].attachments == ()
         assert client.requests[1].messages[1].attachments[0].path == str(requested_file.resolve())
+        attachment_event = [
+            event for event in audit_logger.events if event["event_type"] == "llm_attachment_requested"
+        ][-1]
+        assert attachment_event["paths"] == ["specs/requirements.txt"]
+        assert attachment_event["run_id"] == "run-attach"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

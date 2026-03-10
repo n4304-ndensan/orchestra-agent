@@ -11,6 +11,7 @@ from orchestra_agent.domain import (
     Workflow,
 )
 from orchestra_agent.domain.serialization import step_plan_to_json_text, workflow_to_xml_text
+from orchestra_agent.observability import bind_observation_context
 from orchestra_agent.ports import (
     IAuditLogger,
     IPlanner,
@@ -86,6 +87,7 @@ class FailureHandler:
             event_type="replanned_step_plan",
             reason="Replanned after failure.",
             trigger="failure",
+            enforce_limit=True,
         )
 
     def handle_feedback(
@@ -93,7 +95,7 @@ class FailureHandler:
         workflow: Workflow,
         step_plan: StepPlan,
         state: AgentState,
-        reviewed_step: Step,
+        review_target: str,
         feedback: str,
         snapshot_ref: str | None,
         replan_attempt: int = 0,
@@ -107,12 +109,12 @@ class FailureHandler:
                 "run_id": state.run_id,
                 "workflow_id": workflow.workflow_id,
                 "step_plan_id": step_plan.step_plan_id,
-                "step_id": reviewed_step.step_id,
+                "step_id": review_target,
                 "feedback": feedback,
             }
         )
 
-        message = f"User feedback for step '{reviewed_step.step_id}': {feedback}"
+        message = f"User feedback for target '{review_target}': {feedback}"
         return self._replan_with_feedback(
             workflow=workflow,
             previous_plan=step_plan,
@@ -122,6 +124,7 @@ class FailureHandler:
             event_type="replanned_from_feedback",
             reason="Replanned after user feedback.",
             trigger="feedback",
+            enforce_limit=False,
         )
 
     def _replan_with_feedback(
@@ -134,8 +137,9 @@ class FailureHandler:
         event_type: str,
         reason: str,
         trigger: str,
+        enforce_limit: bool,
     ) -> RecoveryDecision:
-        if replan_attempt >= self._max_replans:
+        if enforce_limit and replan_attempt >= self._max_replans:
             return RecoveryDecision(
                 should_replan=False,
                 workflow=None,
@@ -144,23 +148,46 @@ class FailureHandler:
                 reason="Replan limit reached.",
             )
 
-        updated_workflow = workflow.with_feedback(
-            feedback,
-            replan_context=self._build_replan_context(
-                workflow=workflow,
-                previous_plan=previous_plan,
-                trigger=trigger,
-                change_summary=feedback,
-            ),
-        )
-        if self._workflow_repository is not None:
-            self._workflow_repository.save(updated_workflow)
+        with bind_observation_context(
+            phase="replan_with_feedback",
+            run_id=run_id,
+            workflow_id=workflow.workflow_id,
+            workflow_version=workflow.version,
+            trigger=trigger,
+        ):
+            updated_workflow = workflow.with_feedback(
+                feedback,
+                replan_context=self._build_replan_context(
+                    workflow=workflow,
+                    previous_plan=previous_plan,
+                    trigger=trigger,
+                    change_summary=feedback,
+                ),
+            )
+            if self._workflow_repository is not None:
+                self._workflow_repository.save(updated_workflow)
 
-        replanned = self._planner.compile_step_plan(updated_workflow)
-        replanned = self._carry_forward_paths(previous_plan, replanned)
-        evaluated = self._policy_engine.evaluate(replanned)
-        self._step_plan_repository.save(evaluated.step_plan)
+            replanned = self._planner.compile_step_plan(updated_workflow)
+            replanned = self._carry_forward_paths(previous_plan, replanned)
+            evaluated = self._policy_engine.evaluate(replanned)
+            self._step_plan_repository.save(evaluated.step_plan)
 
+        workflow_path: str | None = None
+        workflow_path_getter = getattr(self._workflow_repository, "workflow_path", None)
+        if callable(workflow_path_getter):
+            workflow_path = str(
+                workflow_path_getter(updated_workflow.workflow_id, updated_workflow.version)
+            )
+        step_plan_path: str | None = None
+        step_plan_path_getter = getattr(self._step_plan_repository, "step_plan_json_path", None)
+        if callable(step_plan_path_getter):
+            step_plan_path = str(
+                step_plan_path_getter(
+                    updated_workflow.workflow_id,
+                    evaluated.step_plan.step_plan_id,
+                    evaluated.step_plan.version,
+                )
+            )
         self._audit_logger.record(
             {
                 "event_type": event_type,
@@ -170,6 +197,8 @@ class FailureHandler:
                 "step_plan_id": evaluated.step_plan.step_plan_id,
                 "step_plan_version": evaluated.step_plan.version,
                 "approval_status": evaluated.approval_status.value,
+                "workflow_path": workflow_path,
+                "step_plan_path": step_plan_path,
             }
         )
 

@@ -39,7 +39,6 @@ def test_failure_handler_passes_source_documents_and_change_summary_to_replan() 
         )
         planner = RecordingPlanner()
         step_plan = planner.compile_step_plan(workflow)
-        reviewed_step = step_plan.step_map()["write_summary"]
 
         workflow_repo = InMemoryWorkflowRepository()
         workflow_repo.save(workflow)
@@ -60,7 +59,7 @@ def test_failure_handler_passes_source_documents_and_change_summary_to_replan() 
             workflow=workflow,
             step_plan=step_plan,
             state=AgentState(run_id="run-review"),
-            reviewed_step=reviewed_step,
+            review_target="write_summary",
             feedback="Review the original workflow doc and fix the summary write logic.",
             snapshot_ref=None,
         )
@@ -72,7 +71,7 @@ def test_failure_handler_passes_source_documents_and_change_summary_to_replan() 
         assert replanned_workflow.replan_context.trigger == "feedback"
         assert (
             replanned_workflow.replan_context.change_summary
-            == "User feedback for step 'write_summary': "
+            == "User feedback for target 'write_summary': "
             "Review the original workflow doc and fix the summary write logic."
         )
         assert '<workflow id="wf-review" version="1">' in (

@@ -128,6 +128,7 @@ class SafeAugmentedLlmPlanner(IPlanner):
     """
 
     _allowed_tool_refs = {
+        "excel.create_file",
         "excel.open_file",
         "excel.read_sheet",
         "excel.calculate_sum",

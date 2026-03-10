@@ -6,6 +6,8 @@ from typing import Any
 
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.workflow import Workflow
+from orchestra_agent.observability import enrich_observation_event
+from orchestra_agent.ports.audit_logger import IAuditLogger
 from orchestra_agent.ports.llm_client import (
     ILlmClient,
     LlmAttachment,
@@ -42,6 +44,7 @@ class LlmStepExecutor(IStepExecutor):
         max_tokens: int = 2000,
         max_agent_turns: int = 4,
         max_workspace_files: int = 200,
+        audit_logger: IAuditLogger | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._workspace_root = workspace_root.resolve()
@@ -49,6 +52,7 @@ class LlmStepExecutor(IStepExecutor):
         self._max_tokens = max_tokens
         self._max_agent_turns = max_agent_turns
         self._max_workspace_files = max_workspace_files
+        self._audit_logger = audit_logger
 
     def execute(
         self,
@@ -96,6 +100,14 @@ class LlmStepExecutor(IStepExecutor):
                 attached_files=attached_files,
             )
             if requested:
+                self._record_event(
+                    {
+                        "event_type": "llm_attachment_requested",
+                        "workflow_id": workflow.workflow_id,
+                        "step_id": step.step_id,
+                        "paths": requested,
+                    }
+                )
                 requested_paths.extend(requested)
                 continue
             return self._apply_actions(parsed, mcp_client, allowed_tools)
@@ -276,6 +288,14 @@ class LlmStepExecutor(IStepExecutor):
         target = self._resolve_workspace_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+        self._record_event(
+            {
+                "event_type": "workspace_file_written",
+                "path": str(target),
+                "size_bytes": len(content.encode("utf-8")),
+                "source": "llm_step_executor",
+            }
+        )
         return str(target)
 
     def _resolve_workspace_path(self, raw_path: str) -> Path:
@@ -286,6 +306,11 @@ class LlmStepExecutor(IStepExecutor):
         if not resolved.is_relative_to(self._workspace_root):
             raise ValueError(f"Workspace sandbox rejected path outside workspace: {raw_path}")
         return resolved
+
+    def _record_event(self, event: dict[str, Any]) -> None:
+        if self._audit_logger is None:
+            return
+        self._audit_logger.record(enrich_observation_event(event))
 
     def _available_tool_catalog(
         self,

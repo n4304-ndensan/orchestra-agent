@@ -181,7 +181,7 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=defaults.runtime.interactive_approval,
         help=(
-            "When auto-approve is off, ask approval decisions in yes/no format "
+            "When auto-approve is off, ask approval decisions in yes/no/feedback format "
             "on the terminal."
         ),
     )
@@ -304,6 +304,8 @@ def _resolve_mcp_endpoints(
 
 def _start_and_resume(
     args: argparse.Namespace,
+    workspace: Path,
+    runtime: AppRuntime,
     run_api: RunAPI,
     workflow_id: str,
     step_plan_id: str,
@@ -323,40 +325,81 @@ def _start_and_resume(
     if args.auto_approve:
         return run
 
-    if run.get("approval_status") != "PENDING":
-        return run
     if not args.interactive_approval:
         return run
+    if not _run_requires_terminal_action(run):
+        return run
     if not sys.stdin.isatty():
-        print("[approval] run is pending and stdin is non-interactive. Use API or --auto-approve.")
+        print(
+            "[approval] run is waiting for approval/feedback and stdin is non-interactive. "
+            "Use API or --auto-approve."
+        )
         return run
 
-    while run.get("approval_status") == "PENDING":
-        if resume_attempt >= args.max_resume:
-            break
-        approve = _prompt_yes_no(run.get("pending_approval"))
-        run = run_api.respond_to_approval(run_id=run["run_id"], approve=approve)
+    while resume_attempt < args.max_resume and _run_requires_terminal_action(run):
+        action, feedback = _prompt_approval_action(run)
+        if action == "feedback":
+            assert feedback is not None
+            previous_run = run
+            run = run_api.respond_to_approval(run_id=run["run_id"], feedback=feedback)
+            if isinstance(run.get("step_plan_id"), str):
+                _rewrite_step_plan_paths(runtime.step_plan_repo, str(run["step_plan_id"]), workspace)
+            _print_feedback_replan_summary(previous_run, run, runtime)
+            resume_attempt += 1
+            continue
+        run = run_api.respond_to_approval(run_id=run["run_id"], approve=(action == "approve"))
         resume_attempt += 1
-        if not approve:
+        if action == "reject":
             break
     return run
 
 
-def _prompt_yes_no(pending_approval: Any) -> bool:
+def _prompt_approval_action(run: dict[str, Any]) -> tuple[str, str | None]:
     message = "Approval is pending."
+    pending_approval = run.get("pending_approval")
     if isinstance(pending_approval, dict):
         detail = pending_approval.get("message")
         if isinstance(detail, str) and detail.strip():
             message = detail
+    elif isinstance(run.get("last_error"), str) and str(run.get("last_error")).strip():
+        message = f"Run failed: {run['last_error']}"
 
-    print(f"[approval] {message}")
+    _print_approval_preview(message, pending_approval)
     while True:
-        raw = input("Approve? (yes/no): ").strip().lower()
+        raw = input("Approve? (yes/no/feedback): ").strip().lower()
         if raw in {"yes", "y"}:
-            return True
+            return "approve", None
         if raw in {"no", "n"}:
-            return False
-        print("Please answer 'yes' or 'no'.")
+            return "reject", None
+        if raw in {"feedback", "f"}:
+            feedback = input("Feedback message: ").strip()
+            if feedback:
+                return "feedback", feedback
+            print("Feedback message cannot be empty.")
+            continue
+        print("Please answer 'yes', 'no', or 'feedback'.")
+
+
+def _run_requires_terminal_action(run: dict[str, Any]) -> bool:
+    if run.get("approval_status") == "PENDING":
+        return True
+    last_error = run.get("last_error")
+    return isinstance(last_error, str) and bool(last_error.strip())
+
+
+def _print_approval_preview(message: str, pending_approval: Any) -> None:
+    print(f"[approval] {message}")
+    if not isinstance(pending_approval, dict):
+        return
+    details = pending_approval.get("details")
+    if not isinstance(details, list):
+        return
+    for raw_line in details:
+        if not isinstance(raw_line, str):
+            continue
+        line = raw_line.strip()
+        if line:
+            print(f"  {line}")
 
 
 def _print_plan(step_plan: StepPlan) -> None:
@@ -382,6 +425,70 @@ def _print_plan(step_plan: StepPlan) -> None:
             indent=2,
         )
     )
+
+
+def _print_feedback_replan_summary(
+    previous_run: dict[str, Any],
+    updated_run: dict[str, Any],
+    runtime: AppRuntime,
+) -> None:
+    workflow_id = updated_run.get("workflow_id")
+    workflow_version = updated_run.get("workflow_version")
+    step_plan_id = updated_run.get("step_plan_id")
+    step_plan_version = updated_run.get("step_plan_version")
+    if not all(
+        (
+            isinstance(workflow_id, str),
+            isinstance(workflow_version, int),
+            isinstance(step_plan_id, str),
+            isinstance(step_plan_version, int),
+        )
+    ):
+        return
+
+    workflow_changed = (
+        updated_run.get("workflow_version") != previous_run.get("workflow_version")
+        or updated_run.get("workflow_id") != previous_run.get("workflow_id")
+    )
+    step_plan_changed = (
+        updated_run.get("step_plan_id") != previous_run.get("step_plan_id")
+        or updated_run.get("step_plan_version") != previous_run.get("step_plan_version")
+    )
+    target = _feedback_target_label(previous_run, updated_run)
+    summary = "replanned" if workflow_changed or step_plan_changed else "updated"
+    approval_status = updated_run.get("approval_status")
+    if approval_status == "PENDING":
+        outcome = "approval pending"
+    elif approval_status == "APPROVED":
+        outcome = "approved"
+    elif approval_status == "REJECTED":
+        outcome = "rejected"
+    else:
+        outcome = "state changed"
+
+    print(f"[feedback] {target} -> {summary}, {outcome}")
+    print(f"  workflow  {runtime.workflow_repo.workflow_path(workflow_id, workflow_version)}")
+    print(
+        "  step plan "
+        f"{runtime.step_plan_repo.step_plan_json_path(workflow_id, step_plan_id, step_plan_version)}"
+    )
+
+
+def _feedback_target_label(previous_run: dict[str, Any], updated_run: dict[str, Any]) -> str:
+    updated_metadata = updated_run.get("metadata")
+    if isinstance(updated_metadata, dict):
+        step_id = updated_metadata.get("feedback_step_id")
+        if isinstance(step_id, str) and step_id.strip():
+            return step_id
+
+    pending_approval = previous_run.get("pending_approval")
+    if isinstance(pending_approval, dict):
+        step_id = pending_approval.get("step_id")
+        if step_id == "__plan__":
+            return "plan"
+        if isinstance(step_id, str) and step_id.strip():
+            return step_id
+    return "plan"
 
 
 def _print_result(run: dict[str, Any], warning: str | None) -> None:
@@ -435,6 +542,8 @@ def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: AppRunt
 
         run = _start_and_resume(
             args=args,
+            workspace=workspace,
+            runtime=runtime,
             run_api=runtime.run_api,
             workflow_id=workflow_id,
             step_plan_id=rewritten_plan.step_plan_id,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Literal, cast
 
@@ -18,6 +19,7 @@ from orchestra_agent.executor.failure_handler import (
     FailureHandler,
     RecoveryDecision,
 )
+from orchestra_agent.observability import bind_observation_context
 from orchestra_agent.ports import (
     IAgentStateStore,
     IAuditLogger,
@@ -93,30 +95,37 @@ class PlanExecutor:
         feedback: str,
     ) -> AgentState:
         context = self._approval_context(state)
-        if context is None:
-            raise ValueError("No approval context is active. Feedback is not accepted now.")
+        if context is not None:
+            stage = context.get("stage")
+            if stage not in ("PLAN", "PRE_STEP", "POST_STEP"):
+                raise ValueError("Invalid approval context stage for feedback.")
 
-        stage = context.get("stage")
-        if stage != "POST_STEP":
-            raise ValueError("Feedback is accepted only after step execution (POST_STEP stage).")
+            step_id = context.get("step_id")
+            if not isinstance(step_id, str):
+                raise ValueError("Invalid approval context: step_id is missing.")
+            if step_id != "__plan__" and step_plan.step_map().get(step_id) is None:
+                raise KeyError(f"Feedback target step '{step_id}' does not exist in step plan.")
 
-        step_id = context.get("step_id")
-        if not isinstance(step_id, str):
-            raise ValueError("Invalid approval context: step_id is missing.")
-        reviewed_step = step_plan.step_map().get(step_id)
-        if reviewed_step is None:
-            raise KeyError(f"Feedback target step '{step_id}' does not exist in step plan.")
-
-        snapshot_ref_raw = context.get("snapshot_ref")
-        snapshot_ref = snapshot_ref_raw if isinstance(snapshot_ref_raw, str) else None
+            snapshot_ref_raw = context.get("snapshot_ref")
+            snapshot_ref = snapshot_ref_raw if isinstance(snapshot_ref_raw, str) else None
+            review_target = "plan" if step_id == "__plan__" else step_id
+        else:
+            failed_record = self._latest_failed_record(state)
+            if failed_record is None:
+                raise ValueError(
+                    "No approval context is active and there is no failed step to attach feedback."
+                )
+            review_target = failed_record.step_id
+            snapshot_ref = failed_record.snapshot_ref
 
         decision = self._failure_handler.handle_feedback(
             workflow=workflow,
             step_plan=step_plan,
             state=state,
-            reviewed_step=reviewed_step,
+            review_target=review_target,
             feedback=feedback,
             snapshot_ref=snapshot_ref,
+            replan_attempt=self._repair_attempts(state),
         )
         if not decision.should_replan:
             state.approval_status = ApprovalStatus.REJECTED
@@ -130,7 +139,7 @@ class PlanExecutor:
         state.approval_status = ApprovalStatus.PENDING
         state.current_step_id = None
         state.metadata["last_feedback"] = feedback
-        state.metadata["feedback_step_id"] = step_id
+        state.metadata["feedback_step_id"] = review_target
         self._state_store.save(state)
         return state
 
@@ -177,12 +186,22 @@ class PlanExecutor:
             )
 
             try:
-                result = self._execute_step(
-                    workflow=workflow,
-                    step=step,
-                    resolved_input=resolved_input,
-                    step_results=step_results,
-                )
+                with bind_observation_context(
+                    phase="execute_step",
+                    run_id=state.run_id,
+                    workflow_id=workflow.workflow_id,
+                    workflow_version=workflow.version,
+                    step_plan_id=step_plan.step_plan_id,
+                    step_plan_version=step_plan.version,
+                    step_id=step.step_id,
+                    tool_ref=step.tool_ref,
+                ):
+                    result = self._execute_step(
+                        workflow=workflow,
+                        step=step,
+                        resolved_input=resolved_input,
+                        step_results=step_results,
+                    )
                 record.mark_success(result=result)
                 step_results[step.step_id] = result
                 self._append_record(state, record)
@@ -360,6 +379,7 @@ class PlanExecutor:
         step_plan: StepPlan,
         state: AgentState,
     ) -> None:
+        details = self._plan_approval_details(step_plan)
         message = (
             f"step plan v{step_plan.version} を実行します。workflow={workflow.workflow_id} / "
             "内容を確認し、実行してよければ approve してください。"
@@ -370,6 +390,7 @@ class PlanExecutor:
             step_plan_version=step_plan.version,
             step_id="__plan__",
             message=message,
+            details=details,
         )
         state.current_step_id = None
         state.approval_status = ApprovalStatus.PENDING
@@ -382,6 +403,7 @@ class PlanExecutor:
                 "step_plan_id": step_plan.step_plan_id,
                 "step_plan_version": step_plan.version,
                 "message": message,
+                "details": details,
             }
         )
 
@@ -392,6 +414,7 @@ class PlanExecutor:
         step: Step,
         state: AgentState,
     ) -> None:
+        details = self._step_approval_details(step)
         message = (
             f"次のstepを実行します。step_id={step.step_id} / 名称={step.name} / "
             f"内容={step.description}。実行してよければ approve してください。"
@@ -402,6 +425,7 @@ class PlanExecutor:
             step_plan_version=step_plan.version,
             step_id=step.step_id,
             message=message,
+            details=details,
         )
         state.current_step_id = step.step_id
         state.approval_status = ApprovalStatus.PENDING
@@ -414,6 +438,7 @@ class PlanExecutor:
                 "step_plan_id": step_plan.step_plan_id,
                 "step_id": step.step_id,
                 "message": message,
+                "details": details,
             }
         )
 
@@ -429,6 +454,7 @@ class PlanExecutor:
         if not step.requires_runtime_approval:
             return False
 
+        details = self._post_step_review_details(step, result)
         message = (
             f"step '{step.step_id}' が完了しました。成果物を確認し、問題なければ approve、"
             "修正が必要なら feedback を送ってください。"
@@ -441,6 +467,7 @@ class PlanExecutor:
             message=message,
             snapshot_ref=snapshot_ref,
             result=result,
+            details=details,
         )
         state.current_step_id = step.step_id
         state.approval_status = ApprovalStatus.PENDING
@@ -453,6 +480,7 @@ class PlanExecutor:
                 "step_plan_id": step_plan.step_plan_id,
                 "step_id": step.step_id,
                 "message": message,
+                "details": details,
             }
         )
         return True
@@ -466,6 +494,7 @@ class PlanExecutor:
         message: str,
         snapshot_ref: str | None = None,
         result: dict[str, Any] | None = None,
+        details: list[str] | None = None,
     ) -> None:
         context: dict[str, Any] = {
             "stage": stage,
@@ -473,11 +502,87 @@ class PlanExecutor:
             "step_id": step_id,
             "message": message,
         }
+        if details:
+            context["details"] = details
         if snapshot_ref is not None:
             context["snapshot_ref"] = snapshot_ref
         if result is not None:
             context["result"] = result
         state.metadata[self._approval_context_key] = context
+
+    @classmethod
+    def _plan_approval_details(cls, step_plan: StepPlan) -> list[str]:
+        ordered_steps = step_plan.ordered_steps()
+        lines = [f"plan     {len(ordered_steps)} steps queued"]
+        max_steps = 8
+        for index, step in enumerate(ordered_steps[:max_steps], start=1):
+            preview = cls._step_preview(step)
+            lines.append(f"{index:02d}. {step.step_id} | {step.tool_ref} | {preview}")
+        remaining = len(ordered_steps) - max_steps
+        if remaining > 0:
+            lines.append(f"... +{remaining} more steps")
+        return lines
+
+    @classmethod
+    def _step_approval_details(cls, step: Step) -> list[str]:
+        lines = [
+            f"step     {step.step_id}",
+            f"tool     {step.tool_ref}",
+            f"what     {step.description}",
+        ]
+        input_preview = cls._mapping_preview(step.resolved_input)
+        if input_preview:
+            lines.append(f"input    {input_preview}")
+        return lines
+
+    @classmethod
+    def _post_step_review_details(cls, step: Step, result: dict[str, Any]) -> list[str]:
+        lines = [
+            f"step     {step.step_id}",
+            f"tool     {step.tool_ref}",
+            f"what     {step.description}",
+        ]
+        result_preview = cls._mapping_preview(result)
+        if result_preview:
+            lines.append(f"result   {result_preview}")
+        return lines
+
+    @classmethod
+    def _step_preview(cls, step: Step) -> str:
+        parts = []
+        if step.description.strip():
+            parts.append(step.description.strip())
+        input_preview = cls._mapping_preview(step.resolved_input)
+        if input_preview:
+            parts.append(input_preview)
+        return " | ".join(parts) if parts else "-"
+
+    @classmethod
+    def _mapping_preview(cls, payload: dict[str, Any], max_items: int = 4) -> str:
+        if not payload:
+            return ""
+        parts: list[str] = []
+        keys = list(payload.keys())
+        for key in keys[:max_items]:
+            parts.append(f"{key}={cls._value_preview(payload[key])}")
+        remaining = len(keys) - max_items
+        if remaining > 0:
+            parts.append(f"+{remaining} more")
+        return ", ".join(parts)
+
+    @classmethod
+    def _value_preview(cls, value: Any) -> str:
+        if isinstance(value, dict):
+            return "{" + cls._mapping_preview(value, max_items=2) + "}"
+        if isinstance(value, list):
+            head = ", ".join(cls._value_preview(item) for item in value[:3])
+            if len(value) > 3:
+                head = f"{head}, +{len(value) - 3} more"
+            return f"[{head}]"
+        if isinstance(value, str):
+            sanitized = value.replace("\r", " ").replace("\n", " ").strip()
+            return sanitized if len(sanitized) <= 72 else f"{sanitized[:69]}..."
+        return json.dumps(value, ensure_ascii=False)
 
     def _apply_recovery_decision(self, state: AgentState, decision: RecoveryDecision) -> None:
         assert decision.workflow is not None
@@ -645,3 +750,10 @@ class PlanExecutor:
         if isinstance(raw_value, int):
             return raw_value
         return 0
+
+    @staticmethod
+    def _latest_failed_record(state: AgentState) -> ExecutionRecord | None:
+        for record in reversed(state.execution_history):
+            if record.status == ExecutionStatus.FAILED:
+                return record
+        return None
