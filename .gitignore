@@ -17,3 +17,4 @@ wheels/
 .tmp/
 .tmp-tests/
 .orchestra_snapshots/
+.env
