@@ -138,6 +138,109 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_applies_batched_actions_in_single_round() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.create_file",
+                      "input": {"file": "output/HelloWorld.xlsx"}
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.write_cells",
+                      "input": {
+                        "file": "output/HelloWorld.xlsx",
+                        "sheet": "Sheet1",
+                        "cells": {"A1": "HelloWorld"}
+                      }
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.save_file",
+                      "input": {
+                        "file": "output/HelloWorld.xlsx",
+                        "output": "output/HelloWorld.xlsx"
+                      }
+                    },
+                    {
+                      "type": "finish",
+                      "result": {
+                        "status": "completed",
+                        "summary": "Created, updated, and saved the workbook.",
+                        "output_file": "output/HelloWorld.xlsx"
+                      }
+                    }
+                  ]
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-batch",
+            name="Batched Excel write",
+            version=1,
+            objective="Create and save an Excel workbook quickly.",
+        )
+        step = Step(
+            step_id="create_excel_file",
+            name="Create Excel file",
+            description="Create and populate an Excel workbook.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "allowed_mcp_tools": [
+                    "excel.create_file",
+                    "excel.write_cells",
+                    "excel.save_file",
+                ]
+            },
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "status": "completed",
+            "summary": "Created, updated, and saved the workbook.",
+            "output_file": "output/HelloWorld.xlsx",
+        }
+        assert mcp_client.calls == [
+            ("excel.create_file", {"file": "output/HelloWorld.xlsx"}),
+            (
+                "excel.write_cells",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "sheet": "Sheet1",
+                    "cells": {"A1": "HelloWorld"},
+                },
+            ),
+            (
+                "excel.save_file",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "output": "output/HelloWorld.xlsx",
+                },
+            ),
+        ]
+        assert len(client.requests) == 1
+        assert '"compact_multi_action_batch"' in client.requests[0].messages[1].content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -205,6 +308,79 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
         ][-1]
         assert attachment_event["paths"] == ["specs/requirements.txt"]
         assert attachment_event["run_id"] == "run-attach"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_supports_attachment_requests_inside_actions_payload() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        specs_dir = base / "specs"
+        specs_dir.mkdir()
+        requested_file = specs_dir / "requirements.txt"
+        requested_file.write_text("Use this attached file.", encoding="utf-8")
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "request_file_attachments",
+                      "paths": ["specs/requirements.txt"],
+                      "reason": "Need the requirements document"
+                    }
+                  ]
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "used-attachment",
+                    "summary": "Reviewed the attached requirements file."
+                  }
+                }
+                """,
+            ]
+        )
+        audit_logger = InMemoryAuditLogger()
+        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
+        workflow = Workflow(
+            workflow_id="wf-1",
+            name="Workspace summary",
+            version=1,
+            objective="Create report",
+        )
+        step = Step(
+            step_id="orchestrate",
+            name="Orchestrate report",
+            description="Read and write files",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+
+        with bind_observation_context(run_id="run-attach-actions", step_id=step.step_id):
+            result = executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=step.resolved_input,
+                step_results={},
+                mcp_client=FakeMcpClient(),
+            )
+
+        assert result == {
+            "status": "used-attachment",
+            "summary": "Reviewed the attached requirements file.",
+        }
+        assert len(client.requests) == 2
+        assert client.requests[1].messages[-1].attachments[0].path == str(requested_file.resolve())
+        attachment_event = [
+            event
+            for event in audit_logger.events
+            if event["event_type"] == "llm_attachment_requested"
+        ][-1]
+        assert attachment_event["run_id"] == "run-attach-actions"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

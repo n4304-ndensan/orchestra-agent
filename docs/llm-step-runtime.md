@@ -1,6 +1,6 @@
 # LLM Step Runtime Protocol
 
-`orchestra-agent` の `orchestra.llm_execute` / `orchestra.ai_review` は、step ごとに 1 回の大きな JSON を返すのではなく、単一 action の往復プロトコルで動きます。
+`orchestra-agent` の `orchestra.llm_execute` / `orchestra.ai_review` は、step ごとに 1 回の大きな JSON を返すのではなく、action ベースの往復プロトコルで動きます。
 
 ## Goals
 
@@ -10,7 +10,7 @@
 
 ## Action Contract
 
-LLM は各 turn で次のいずれか 1 つだけ返します。
+基本形では、LLM は各 turn で次のいずれか 1 つを返します。
 
 - `call_mcp_tool`
   - `tool_ref`
@@ -29,6 +29,27 @@ LLM は各 turn で次のいずれか 1 つだけ返します。
 - この値が step の正式な出力になります
 - 次の step では `step_results` として参照されます
 - runtime 内では dataclass ベースの parser により検証されます
+
+## Compact Batch Mode
+
+Protocol v2 では、待ち時間を減らすために短い action 列を 1 応答でまとめられます。
+
+```json
+{
+  "actions": [
+    {"type": "call_mcp_tool", "tool_ref": "excel.create_file", "input": {"file": "output.xlsx"}},
+    {"type": "call_mcp_tool", "tool_ref": "excel.save_file", "input": {"file": "output.xlsx", "output": "output.xlsx"}},
+    {"type": "finish", "result": {"output_file": "output.xlsx"}}
+  ]
+}
+```
+
+制約は次の通りです。
+
+- `request_file_attachments` は単独 turn でのみ使う
+- `finish` は batch 内で最後に 1 回だけ使う
+- 後続 action が中間結果に依存しない場合だけ batch を使う
+- batch は短く保ち、通常は 2 から 4 action 程度にする
 
 ## Extensibility
 

@@ -18,11 +18,13 @@ class StubMcpClient:
         self._result_by_tool = result_by_tool
         self._descriptions = descriptions or {}
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.describe_calls = 0
 
     def list_tools(self) -> list[str]:
         return list(self._tools)
 
     def describe_tools(self) -> list[dict[str, str]]:
+        self.describe_calls += 1
         return [
             {
                 "name": tool_name,
@@ -72,3 +74,32 @@ def test_multi_endpoint_client_rejects_duplicate_tool_names() -> None:
 
     with pytest.raises(ValueError, match="Duplicate MCP tool registrations detected"):
         client.list_tools()
+
+
+def test_multi_endpoint_client_caches_describe_tools_results() -> None:
+    files_client = StubMcpClient(
+        tools=["fs_list_entries"],
+        result_by_tool={"fs_list_entries": {"entries": []}},
+    )
+    excel_client = StubMcpClient(
+        tools=["excel.open_file"],
+        result_by_tool={"excel.open_file": {"sheets": ["Sheet1"]}},
+    )
+    client = MultiEndpointMcpClient(
+        clients={
+            "files": files_client,
+            "excel": excel_client,
+        }
+    )
+
+    assert client.describe_tools() == [
+        {"name": "excel.open_file", "description": "", "server": "excel"},
+        {"name": "fs_list_entries", "description": "", "server": "files"},
+    ]
+    assert client.describe_tools() == [
+        {"name": "excel.open_file", "description": "", "server": "excel"},
+        {"name": "fs_list_entries", "description": "", "server": "files"},
+    ]
+    assert client.list_tools() == ["excel.open_file", "fs_list_entries"]
+    assert files_client.describe_calls == 1
+    assert excel_client.describe_calls == 1

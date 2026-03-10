@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from orchestra_agent.adapters.db import (
+    FilesystemAuditLogger,
     FilesystemStepPlanRepository,
     InMemoryAuditLogger,
     XmlWorkflowRepository,
@@ -108,5 +109,29 @@ def test_filesystem_step_plan_repository_save_and_load() -> None:
             event for event in audit_logger.events if event["event_type"] == "step_plan_saved"
         ][-1]
         assert saved["paths"]["latest_json"].endswith("step_plan_latest.json")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_filesystem_audit_logger_streams_and_limits_events() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        logger = FilesystemAuditLogger(base / "audit")
+        try:
+            logger.record({"event_type": "one", "run_id": "run-1"})
+            logger.record({"event_type": "two", "run_id": "run-2"})
+            logger.record({"event_type": "three", "run_id": "run-1"})
+
+            assert [event["event_type"] for event in logger.list_events(run_id="run-1")] == [
+                "one",
+                "three",
+            ]
+            assert [event["event_type"] for event in logger.list_events(limit=2)] == [
+                "two",
+                "three",
+            ]
+        finally:
+            logger.close()
     finally:
         shutil.rmtree(base, ignore_errors=True)

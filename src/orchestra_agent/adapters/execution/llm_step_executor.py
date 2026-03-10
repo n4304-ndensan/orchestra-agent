@@ -136,13 +136,24 @@ class LlmStepExecutor(IStepExecutor):
                 LlmMessage(role="assistant", content=self._json_text(parsed))
             )
             if self._is_legacy_action_payload(parsed):
+                if self._handle_attachment_payload(
+                    parsed=parsed,
+                    workflow=workflow,
+                    step=step,
+                    indexed_files=indexed_files,
+                    attached_files=attached_files,
+                    requested_paths=requested_paths,
+                    messages=messages,
+                ):
+                    continue
                 return self._apply_actions(parsed, mcp_client, allowed_tools)
 
             action = parse_runtime_action(parsed)
 
             if isinstance(action, RequestFileAttachmentsAction):
-                prior_attachment_count = len(attached_files)
-                requested = self._append_requested_attachments(
+                self._apply_attachment_request(
+                    workflow=workflow,
+                    step=step,
                     request_actions=[
                         {
                             "paths": action.paths,
@@ -154,41 +165,10 @@ class LlmStepExecutor(IStepExecutor):
                             **action.extensions,
                         }
                     ],
-                    indexed_paths={
-                        entry["path"]
-                        for entry in indexed_files
-                        if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-                    },
+                    indexed_files=indexed_files,
                     attached_files=attached_files,
-                )
-                if not requested:
-                    raise ValueError("LLM requested file attachments but no new files were added.")
-                self._record_event(
-                    {
-                        "event_type": "llm_attachment_requested",
-                        "workflow_id": workflow.workflow_id,
-                        "step_id": step.step_id,
-                        "paths": requested,
-                    }
-                )
-                requested_paths.extend(requested)
-                messages.append(
-                    LlmMessage(
-                        role="user",
-                        content=self._json_text(
-                            self._sanitize_for_llm(
-                                {
-                                    "attachment_request_result": {
-                                        "attached_paths": requested,
-                                        "all_attached_files": [
-                                            attachment.path for attachment in attached_files
-                                        ],
-                                    }
-                                }
-                            )
-                        ),
-                        attachments=tuple(attached_files[prior_attachment_count:]),
-                    )
+                    requested_paths=requested_paths,
+                    messages=messages,
                 )
                 continue
 
@@ -289,6 +269,17 @@ class LlmStepExecutor(IStepExecutor):
                     "write_file",
                     "finish",
                 ],
+                "compact_multi_action_batch": {
+                    "supported": True,
+                    "max_actions": 4,
+                    "allowed_actions": ["call_mcp_tool", "write_file", "finish"],
+                    "request_file_attachments_requires_separate_turn": True,
+                    "finish_must_be_last": True,
+                    "use_when": (
+                        "Only batch actions when later actions do not depend on intermediate "
+                        "tool or file results."
+                    ),
+                },
                 "finish_result_contract": (
                     "finish.result is required and becomes the summarized handoff to later steps."
                 ),
@@ -307,29 +298,35 @@ class LlmStepExecutor(IStepExecutor):
     def _system_prompt() -> str:
         return (
             "You are an AI execution controller working through an MCP runtime.\n"
-            "Return ONLY one JSON object per turn using exactly one of these shapes:\n"
+            "Return ONLY one JSON object per turn using one of these shapes:\n"
             '{"type":"call_mcp_tool","tool_ref":"...","input":{}}\n'
             '{"type":"request_file_attachments","paths":["relative/path.ext"],"reason":"..."}\n'
             '{"type":"write_file","path":"relative/path.txt","content":"..."}\n'
             '{"type":"finish","result":{}}\n'
+            '{"actions":[{"type":"call_mcp_tool","tool_ref":"...","input":{}},{"type":"finish","result":{}}]}\n'
             "Rules:\n"
-            "1) Each turn must contain exactly one action object.\n"
-            "2) Use only the provided available_mcp_tools[].name values.\n"
-            "3) After a tool call or file write, you will receive a user message with the "
+            "1) Each turn must contain exactly one JSON object.\n"
+            "2) Prefer a single action object, but you may use actions[] to batch a short, "
+            "deterministic sequence of call_mcp_tool/write_file actions plus a final finish "
+            "when you do not need intermediate results to decide later actions.\n"
+            "3) Use only the provided available_mcp_tools[].name values.\n"
+            "4) After a tool call or file write, you will receive a user message with the "
             "execution result. Use that result to decide the next action.\n"
-            "4) Return finish only when the current step objective is complete, and always "
+            "5) Return finish only when the current step objective is complete, and always "
             "include result as an object that summarizes the important outcomes of the step. "
             "That finish.result will be passed to later steps.\n"
-            "5) If step.step_runtime is orchestra.ai_review, focus on analysis and return a "
+            "6) If step.step_runtime is orchestra.ai_review, focus on analysis and return a "
             "review result with finish unless an MCP tool is clearly required.\n"
-            "6) Apply real changes through MCP tool calls and workspace writes only.\n"
-            "7) If you need local file contents as true file attachments, return ONLY "
+            "7) Apply real changes through MCP tool calls and workspace writes only.\n"
+            "8) If you need local file contents as true file attachments, return ONLY "
             "request_file_attachments.\n"
-            "8) request_file_attachments paths must come from workspace_file_index.\n"
-            "9) write_file path must stay inside workspace_root.\n"
-            "10) Use exact argument names from the selected MCP tool contract. Do not invent "
+            "9) request_file_attachments cannot be mixed with execution actions.\n"
+            "10) In actions[], finish must be last and may appear at most once.\n"
+            "11) Keep actions[] short, usually 2 to 4 actions maximum.\n"
+            "12) write_file path must stay inside workspace_root.\n"
+            "13) Use exact argument names from the selected MCP tool contract. Do not invent "
             "aliases or cross-server arguments.\n"
-            "11) Keep output valid JSON with no commentary."
+            "14) Keep output valid JSON with no commentary."
         )
 
     @staticmethod
@@ -348,6 +345,7 @@ class LlmStepExecutor(IStepExecutor):
         raw_actions = parsed.get("actions", [])
         if not isinstance(raw_actions, list):
             raise ValueError("LLM step executor 'actions' must be a list.")
+        self._validate_action_sequence(raw_actions)
 
         explicit_result = parsed.get("result")
         written_files: list[str] = []
@@ -398,9 +396,108 @@ class LlmStepExecutor(IStepExecutor):
         if action_type == "write_file":
             written_files.append(self._write_file(raw_action))
             return explicit_result, last_mcp_result
+        if action_type == "finish":
+            result = raw_action.get("result")
+            if not isinstance(result, dict):
+                raise ValueError("finish requires object 'result'.")
+            return result, last_mcp_result
         if action_type == "set_result":
             return raw_action.get("result"), last_mcp_result
         raise ValueError(f"Unsupported LLM action type: {action_type}")
+
+    @staticmethod
+    def _validate_action_sequence(raw_actions: list[Any]) -> None:
+        finish_seen = False
+        for index, raw_action in enumerate(raw_actions):
+            if not isinstance(raw_action, dict):
+                raise ValueError("Each LLM action must be an object.")
+            action_type = raw_action.get("type")
+            if action_type == "request_file_attachments" and len(raw_actions) != 1:
+                raise ValueError(
+                    "request_file_attachments cannot be mixed with execution actions."
+                )
+            if action_type == "finish":
+                if finish_seen:
+                    raise ValueError("finish may appear at most once in actions[].")
+                if index != len(raw_actions) - 1:
+                    raise ValueError("finish must be the last action in actions[].")
+                finish_seen = True
+
+    def _handle_attachment_payload(
+        self,
+        *,
+        parsed: Any,
+        workflow: Workflow,
+        step: Step,
+        indexed_files: list[dict[str, Any]],
+        attached_files: list[LlmAttachment],
+        requested_paths: list[str],
+        messages: list[LlmMessage],
+    ) -> bool:
+        request_actions = self._request_actions_from_payload(parsed)
+        if not request_actions:
+            return False
+        self._apply_attachment_request(
+            workflow=workflow,
+            step=step,
+            request_actions=request_actions,
+            indexed_files=indexed_files,
+            attached_files=attached_files,
+            requested_paths=requested_paths,
+            messages=messages,
+        )
+        return True
+
+    def _apply_attachment_request(
+        self,
+        *,
+        workflow: Workflow,
+        step: Step,
+        request_actions: list[dict[str, Any]],
+        indexed_files: list[dict[str, Any]],
+        attached_files: list[LlmAttachment],
+        requested_paths: list[str],
+        messages: list[LlmMessage],
+    ) -> None:
+        prior_attachment_count = len(attached_files)
+        requested = self._append_requested_attachments(
+            request_actions=request_actions,
+            indexed_paths={
+                entry["path"]
+                for entry in indexed_files
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+            },
+            attached_files=attached_files,
+        )
+        if not requested:
+            raise ValueError("LLM requested file attachments but no new files were added.")
+        self._record_event(
+            {
+                "event_type": "llm_attachment_requested",
+                "workflow_id": workflow.workflow_id,
+                "step_id": step.step_id,
+                "paths": requested,
+            }
+        )
+        requested_paths.extend(requested)
+        messages.append(
+            LlmMessage(
+                role="user",
+                content=self._json_text(
+                    self._sanitize_for_llm(
+                        {
+                            "attachment_request_result": {
+                                "attached_paths": requested,
+                                "all_attached_files": [
+                                    attachment.path for attachment in attached_files
+                                ],
+                            }
+                        }
+                    )
+                ),
+                attachments=tuple(attached_files[prior_attachment_count:]),
+            )
+        )
 
     @staticmethod
     def _prepare_mcp_tool_call(

@@ -101,3 +101,6 @@ class AppRuntime:
         close_llm = getattr(self.llm_client, "close", None)
         if callable(close_llm):
             close_llm()
+        close_audit = getattr(self.audit_logger, "close", None)
+        if callable(close_audit):
+            close_audit()

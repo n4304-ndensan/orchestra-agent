@@ -29,15 +29,28 @@ class MultiEndpointMcpClient(IMcpClient):
                 for endpoint in endpoints
             }
         self._tool_owners: dict[str, str] = {}
+        self._described_tools_cache: list[dict[str, Any]] | None = None
 
     def list_tools(self) -> list[str]:
-        self._tool_owners = self._discover_tool_owners()
+        if self._described_tools_cache is not None:
+            self._tool_owners = {
+                tool["name"]: str(tool["server"])
+                for tool in self._described_tools_cache
+                if isinstance(tool.get("name"), str) and isinstance(tool.get("server"), str)
+            }
+            return sorted(self._tool_owners)
+        tool_catalog: dict[str, dict[str, Any]] = {}
+        self._tool_owners = self._discover_tool_owners(tool_catalog=tool_catalog)
+        self._described_tools_cache = [tool_catalog[name] for name in sorted(tool_catalog)]
         return sorted(self._tool_owners)
 
     def describe_tools(self) -> list[dict[str, Any]]:
+        if self._described_tools_cache is not None:
+            return [dict(tool) for tool in self._described_tools_cache]
         tool_catalog: dict[str, dict[str, Any]] = {}
         self._tool_owners = self._discover_tool_owners(tool_catalog=tool_catalog)
-        return [tool_catalog[name] for name in sorted(tool_catalog)]
+        self._described_tools_cache = [tool_catalog[name] for name in sorted(tool_catalog)]
+        return [dict(tool) for tool in self._described_tools_cache]
 
     def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
         owner = self._tool_owners.get(tool_ref)
