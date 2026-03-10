@@ -22,6 +22,8 @@
 - `GET /tools`
   - tool catalog のみを返す軽量 API
 
+`/system` と `/tools` の tool catalog は、`name` / `description` に加えて `server` などのメタデータを含むことがあります。
+
 運用順序:
 
 1. `/health`
@@ -65,7 +67,7 @@
 日常監視で見る項目:
 
 1. `/ready` が `200` を返す
-2. `/system` の `tools` が期待 tool を含む
+2. `/system` の `tools` が期待 tool を含み、server metadata も想定通りか
 3. `events.ndjson` に `execution_failure` が増えていない
 4. `runs/<run_id>.json` が `approval_status = PENDING` で停滞していない
 
@@ -78,6 +80,8 @@ run が止まったときの確認順序:
 3. `workspace/plan/<workflow_id>/<step_plan_id>/step_plan_latest.json`
 4. `workspace/workflow/<workflow_id>/workflow.xml`
 
+step 実行中の挙動確認では、audit に残る LLM turn と MCP tool call を見れば、`finish.result` に至るまでの往復を追えます。
+
 feedback 修正が必要なとき:
 
 1. `/runs/{run_id}/approval` に `{"feedback":"..."}` を送る
@@ -89,7 +93,18 @@ feedback 修正が必要なとき:
 - file / excel 操作は workspace に閉じる
 - approval gate が plan / high-risk step の前後に入る
 - LLM への依頼内容と MCP tool call は audit に残る
+- 各 step の最終 handoff は `finish.result` に正規化される
 - 公開ポートはデフォルトで localhost bind
+
+## Adding MCP Servers
+
+新しい MCP server を追加するときの運用前提:
+
+1. `orchestra-agent.toml` に `[[mcp.servers]]` を追加する
+2. `/ready` と `/system` で tool catalog を確認する
+3. tool 名が既存 server と重複していないことを確認する
+
+runtime は tool 名重複を reject するため、server を増やしても routing の曖昧さは残しません。
 
 ## Release Checklist
 

@@ -129,3 +129,24 @@ def test_filesystem_snapshot_manager_restores_file() -> None:
         assert target_file.read_text(encoding="utf-8") == "original"
     finally:
         shutil.rmtree(base, ignore_errors=True)
+
+
+def test_filesystem_snapshot_manager_resolves_relative_file_inside_workspace() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        snapshots_dir = base / "snapshots"
+        manager = FilesystemSnapshotManager(base_snapshot_dir=snapshots_dir, workspace_root=base)
+        target_file = base / "sales.xlsx"
+        target_file.write_text("original", encoding="utf-8")
+
+        snapshot_ref = manager.create_snapshot(
+            scope=BackupScope.FILE,
+            metadata={"file": "sales.xlsx"},
+        )
+        target_file.write_text("changed", encoding="utf-8")
+        manager.restore_snapshot(snapshot_ref)
+
+        assert target_file.read_text(encoding="utf-8") == "original"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)

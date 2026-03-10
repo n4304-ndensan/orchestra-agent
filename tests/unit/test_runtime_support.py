@@ -23,7 +23,7 @@ class _RecordingRuntimeFactory:
 
 class _DescribeToolsClient:
     def describe_tools(self) -> list[dict[str, str]]:
-        return [{"name": "excel.open_file", "description": "Open workbook"}]
+        return [{"name": "excel.open_file", "description": "Open workbook", "server": "excel"}]
 
     def list_tools(self) -> list[str]:
         return ["ignored"]
@@ -70,7 +70,13 @@ def test_resolve_mcp_endpoints_prefers_cli_values_and_normalizes() -> None:
 def test_describe_mcp_tools_uses_descriptions_when_available() -> None:
     tools = describe_mcp_tools(_DescribeToolsClient())
 
-    assert tools == [{"name": "excel.open_file", "description": "Open workbook"}]
+    assert tools == [
+        {
+            "name": "excel.open_file",
+            "description": "Open workbook",
+            "server": "excel",
+        }
+    ]
 
 
 def test_describe_mcp_tools_falls_back_to_list_tools() -> None:

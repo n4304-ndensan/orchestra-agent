@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import cast
+from typing import Literal, cast
 from uuid import uuid4
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
@@ -29,32 +29,55 @@ class CellWriteRequest:
     create_file: bool
 
 
+type PlanStyle = Literal["concrete", "abstract"]
+
+
 class LlmPlanner(IPlanner):
     """
     Deterministic planner adapter with LLM-compatible interface.
     In production this adapter can delegate to an LLM and then validate output.
     """
 
-    def __init__(self, defaults: PlannerDefaults | None = None) -> None:
+    def __init__(
+        self,
+        defaults: PlannerDefaults | None = None,
+        *,
+        plan_style: PlanStyle = "concrete",
+    ) -> None:
         self._defaults = defaults or PlannerDefaults()
+        self._plan_style = plan_style
 
     def compile_step_plan(self, workflow: Workflow) -> StepPlan:
         objective = workflow.objective
         cell_write_request = self._extract_cell_write_request(objective)
         if cell_write_request is not None:
-            steps = self._build_cell_write_steps(cell_write_request)
+            steps = (
+                self._build_cell_write_steps(cell_write_request)
+                if self._plan_style == "concrete"
+                else self._build_abstract_cell_write_steps(cell_write_request)
+            )
         else:
             source_file = self._extract_excel_file(objective) or "input.xlsx"
             source_sheet = self._extract_sheet(objective) or self._defaults.source_sheet
             target_column = self._extract_column(objective) or self._defaults.target_column
             summary_sheet = self._defaults.summary_sheet
             output_file = self._extract_output_file(objective, source_file)
-            steps = self._build_summary_steps(
-                source_file=source_file,
-                source_sheet=source_sheet,
-                target_column=target_column,
-                summary_sheet=summary_sheet,
-                output_file=output_file,
+            steps = (
+                self._build_summary_steps(
+                    source_file=source_file,
+                    source_sheet=source_sheet,
+                    target_column=target_column,
+                    summary_sheet=summary_sheet,
+                    output_file=output_file,
+                )
+                if self._plan_style == "concrete"
+                else self._build_abstract_summary_steps(
+                    source_file=source_file,
+                    source_sheet=source_sheet,
+                    target_column=target_column,
+                    summary_sheet=summary_sheet,
+                    output_file=output_file,
+                )
             )
 
         return StepPlan(
@@ -155,6 +178,69 @@ class LlmPlanner(IPlanner):
             ),
         ]
 
+    def _build_abstract_summary_steps(
+        self,
+        *,
+        source_file: str,
+        source_sheet: str,
+        target_column: str,
+        summary_sheet: str,
+        output_file: str,
+    ) -> list[Step]:
+        return [
+            Step(
+                step_id="inspect_source_workbook",
+                name="Inspect source workbook",
+                description=(
+                    "Inspect the source workbook and identify the data needed to produce "
+                    "the requested summary."
+                ),
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": source_file,
+                    "sheet": source_sheet,
+                    "column": target_column,
+                    "output": output_file,
+                },
+                risk_level=RiskLevel.LOW,
+                backup_scope=BackupScope.NONE,
+            ),
+            Step(
+                step_id="prepare_summary_output",
+                name="Prepare summary output",
+                description=(
+                    "Create or update the summary content in the workbook based on the "
+                    "requested aggregation."
+                ),
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": source_file,
+                    "source_sheet": source_sheet,
+                    "summary_sheet": summary_sheet,
+                    "column": target_column,
+                    "output": output_file,
+                },
+                depends_on=["inspect_source_workbook"],
+                risk_level=RiskLevel.MEDIUM,
+                backup_scope=BackupScope.FILE,
+            ),
+            Step(
+                step_id="finalize_output",
+                name="Finalize output",
+                description="Save the updated workbook to the requested output location.",
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": source_file,
+                    "summary_sheet": summary_sheet,
+                    "output": output_file,
+                },
+                depends_on=["prepare_summary_output"],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=True,
+                backup_scope=BackupScope.FILE,
+            ),
+        ]
+
     def _build_cell_write_steps(self, request: CellWriteRequest) -> list[Step]:
         opening_step = Step(
             step_id="create_excel_file" if request.create_file else "open_file",
@@ -200,6 +286,58 @@ class LlmPlanner(IPlanner):
                     "output": request.output,
                 },
                 depends_on=["write_cells"],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=True,
+                backup_scope=BackupScope.FILE,
+            ),
+        ]
+
+    def _build_abstract_cell_write_steps(self, request: CellWriteRequest) -> list[Step]:
+        return [
+            Step(
+                step_id="prepare_workbook",
+                name="Prepare workbook",
+                description=(
+                    "Prepare the target workbook and worksheet so the requested content can "
+                    "be applied safely."
+                ),
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "output": request.output,
+                    "create_file": request.create_file,
+                },
+                risk_level=RiskLevel.LOW,
+                backup_scope=BackupScope.WORKSPACE if request.create_file else BackupScope.FILE,
+            ),
+            Step(
+                step_id="apply_requested_update",
+                name="Apply requested update",
+                description="Apply the requested workbook update at the target location.",
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "cell": request.cell,
+                    "value": request.value,
+                    "output": request.output,
+                },
+                depends_on=["prepare_workbook"],
+                risk_level=RiskLevel.MEDIUM,
+                backup_scope=BackupScope.FILE,
+            ),
+            Step(
+                step_id="finalize_workbook",
+                name="Finalize workbook",
+                description="Save the workbook to the requested output location.",
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "output": request.output,
+                },
+                depends_on=["apply_requested_update"],
                 risk_level=RiskLevel.HIGH,
                 requires_approval=True,
                 backup_scope=BackupScope.FILE,

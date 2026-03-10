@@ -120,7 +120,7 @@ class ControlPlaneInspector:
             payload["detail"] = "mock mcp client is active"
         return payload
 
-    def tool_catalog_snapshot(self) -> tuple[list[dict[str, str]], str | None]:
+    def tool_catalog_snapshot(self) -> tuple[list[dict[str, Any]], str | None]:
         try:
             return describe_mcp_tools(self._runtime.mcp_client), None
         except Exception as exc:  # noqa: BLE001

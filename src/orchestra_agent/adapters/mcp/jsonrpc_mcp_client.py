@@ -7,6 +7,7 @@ from uuid import uuid4
 import httpx
 
 from orchestra_agent.ports.mcp_client import IMcpClient
+from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
 
 
 class JsonRpcMcpClient(IMcpClient):
@@ -17,25 +18,10 @@ class JsonRpcMcpClient(IMcpClient):
     def list_tools(self) -> list[str]:
         return [tool["name"] for tool in self.describe_tools()]
 
-    def describe_tools(self) -> list[dict[str, str]]:
+    def describe_tools(self) -> list[dict[str, Any]]:
         result = self._request("tools/list", {})
         tools = result.get("tools", [])
-        described_tools: list[dict[str, str]] = []
-        for tool in tools:
-            if isinstance(tool, dict):
-                name = tool.get("name")
-                if not isinstance(name, str):
-                    continue
-                description = tool.get("description")
-                described_tools.append(
-                    {
-                        "name": name,
-                        "description": description if isinstance(description, str) else "",
-                    }
-                )
-            elif isinstance(tool, str):
-                described_tools.append({"name": tool, "description": ""})
-        return described_tools
+        return normalize_mcp_tool_catalog(tools)
 
     def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
         result = self._request(

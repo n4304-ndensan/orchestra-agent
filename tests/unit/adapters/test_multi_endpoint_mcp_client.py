@@ -54,8 +54,8 @@ def test_multi_endpoint_client_merges_and_routes_tools() -> None:
 
     assert client.list_tools() == ["excel.open_file", "fs_list_entries"]
     assert client.describe_tools() == [
-        {"name": "excel.open_file", "description": ""},
-        {"name": "fs_list_entries", "description": ""},
+        {"name": "excel.open_file", "description": "", "server": "excel"},
+        {"name": "fs_list_entries", "description": "", "server": "files"},
     ]
     assert client.call_tool("excel.open_file", {"file": "sales.xlsx"}) == {"sheets": ["Sheet1"]}
     assert excel_client.calls == [("excel.open_file", {"file": "sales.xlsx"})]

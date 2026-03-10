@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from orchestra_agent.ports import IMcpClient
+from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
 
 from .jsonrpc_mcp_client import JsonRpcMcpClient
 
@@ -33,8 +34,8 @@ class MultiEndpointMcpClient(IMcpClient):
         self._tool_owners = self._discover_tool_owners()
         return sorted(self._tool_owners)
 
-    def describe_tools(self) -> list[dict[str, str]]:
-        tool_catalog: dict[str, dict[str, str]] = {}
+    def describe_tools(self) -> list[dict[str, Any]]:
+        tool_catalog: dict[str, dict[str, Any]] = {}
         self._tool_owners = self._discover_tool_owners(tool_catalog=tool_catalog)
         return [tool_catalog[name] for name in sorted(tool_catalog)]
 
@@ -55,7 +56,7 @@ class MultiEndpointMcpClient(IMcpClient):
 
     def _discover_tool_owners(
         self,
-        tool_catalog: dict[str, dict[str, str]] | None = None,
+        tool_catalog: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         owners: dict[str, str] = {}
         duplicates: dict[str, list[str]] = {}
@@ -67,7 +68,9 @@ class MultiEndpointMcpClient(IMcpClient):
                 if existing is None:
                     owners[tool_name] = label
                     if tool_catalog is not None:
-                        tool_catalog[tool_name] = tool
+                        annotated_tool = dict(tool)
+                        annotated_tool["server"] = label
+                        tool_catalog[tool_name] = annotated_tool
                     continue
                 if tool_name in self._shared_tool_refs:
                     continue
@@ -82,25 +85,11 @@ class MultiEndpointMcpClient(IMcpClient):
         return owners
 
     @staticmethod
-    def _describe_client_tools(client: IMcpClient) -> list[dict[str, str]]:
+    def _describe_client_tools(client: IMcpClient) -> list[dict[str, Any]]:
         describe_tools = getattr(client, "describe_tools", None)
         if callable(describe_tools):
-            raw_tools = describe_tools()
-            described_tools: list[dict[str, str]] = []
-            for raw_tool in raw_tools:
-                if not isinstance(raw_tool, dict):
-                    continue
-                name = raw_tool.get("name")
-                if not isinstance(name, str):
-                    continue
-                description = raw_tool.get("description")
-                described_tools.append(
-                    {
-                        "name": name,
-                        "description": description if isinstance(description, str) else "",
-                    }
-                )
+            described_tools = normalize_mcp_tool_catalog(describe_tools())
             if described_tools:
                 return described_tools
 
-        return [{"name": tool_name, "description": ""} for tool_name in client.list_tools()]
+        return normalize_mcp_tool_catalog(client.list_tools())
