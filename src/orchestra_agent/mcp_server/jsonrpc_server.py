@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,9 +10,12 @@ from typing import Any, Literal
 
 from orchestra_agent.mcp_server.excel_service import ExcelWorkspaceService
 from orchestra_agent.mcp_server.file_service import WorkspaceFileService
+from orchestra_agent.mcp_server.logging_utils import get_mcp_logger, log_event, log_exception
 
 type ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 type ToolGroup = Literal["all", "files", "excel"]
+
+logger = get_mcp_logger(__name__)
 
 
 class JsonRpcError(RuntimeError):
@@ -33,6 +37,13 @@ class ToolRegistry:
 
     def register(self, name: str, description: str, handler: ToolHandler) -> None:
         self._tools[name] = (description, handler)
+        log_event(
+            logger,
+            "mcp_tool_registered",
+            level=logging.DEBUG,
+            tool=name,
+            description=description,
+        )
 
     def list_tools(self) -> list[dict[str, str]]:
         return [
@@ -45,17 +56,30 @@ class ToolRegistry:
         if tool is None:
             raise JsonRpcError(code=-32601, message=f"Unknown tool '{name}'.")
         _, handler = tool
+        log_event(logger, "mcp_tool_call_started", tool=name, arguments=arguments)
         try:
-            return handler(arguments)
+            result = handler(arguments)
+            log_event(
+                logger,
+                "mcp_tool_call_succeeded",
+                tool=name,
+                arguments=arguments,
+                result=result,
+            )
+            return result
         except JsonRpcError:
             raise
         except FileNotFoundError as exc:
+            log_exception(logger, "mcp_tool_call_failed", exc, tool=name, arguments=arguments)
             raise JsonRpcError(code=-32004, message=str(exc)) from exc
         except PermissionError as exc:
+            log_exception(logger, "mcp_tool_call_failed", exc, tool=name, arguments=arguments)
             raise JsonRpcError(code=-32003, message=str(exc)) from exc
         except (IsADirectoryError, NotADirectoryError, KeyError, ValueError) as exc:
+            log_exception(logger, "mcp_tool_call_failed", exc, tool=name, arguments=arguments)
             raise JsonRpcError(code=-32002, message=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
+            log_exception(logger, "mcp_tool_call_failed", exc, tool=name, arguments=arguments)
             raise JsonRpcError(code=-32000, message=str(exc)) from exc
 
 
@@ -81,6 +105,13 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
+            log_event(
+                logger,
+                "mcp_http_healthcheck",
+                path=self.path,
+                client=self.client_address[0],
+                port=self.client_address[1],
+            )
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -99,13 +130,36 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            log_event(
+                logger,
+                "mcp_http_request_received",
+                path=self.path,
+                client=self.client_address[0],
+                port=self.client_address[1],
+                content_length=self.headers.get("Content-Length", "0"),
+            )
             payload = self._read_json_body()
             response = self._handle_rpc(payload)
+            log_event(
+                logger,
+                "mcp_http_request_completed",
+                path=self.path,
+                request_id=payload.get("id"),
+                method=payload.get("method"),
+                response=response,
+            )
             self._send_json(HTTPStatus.OK, response)
         except JsonRpcError as exc:
             request_id = None
             if "payload" in locals() and isinstance(payload, dict):
                 request_id = payload.get("id")
+            log_exception(
+                logger,
+                "mcp_http_request_failed",
+                exc,
+                path=self.path,
+                request_id=request_id,
+            )
             self._send_json(
                 HTTPStatus.OK,
                 {
@@ -119,6 +173,7 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
                 },
             )
         except json.JSONDecodeError as exc:
+            log_exception(logger, "mcp_http_request_invalid_json", exc, path=self.path)
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
                 {
@@ -151,6 +206,14 @@ class JsonRpcMcpRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(params, dict):
             raise JsonRpcError(code=-32602, message="params must be an object.")
 
+        log_event(
+            logger,
+            "mcp_rpc_dispatch",
+            level=logging.DEBUG,
+            request_id=payload.get("id"),
+            method=method,
+            params=params,
+        )
         result = self._dispatch(method, params)
         return {
             "jsonrpc": "2.0",
@@ -385,9 +448,27 @@ def run_jsonrpc_mcp_server(
         rpc_path=normalized_path,
         tool_group=tool_group,
     )
+    log_event(
+        logger,
+        "mcp_server_started",
+        host=host,
+        port=server.server_port,
+        rpc_path=normalized_path,
+        tool_group=tool_group,
+        workspace_root=workspace,
+    )
     try:
         server.serve_forever()
     finally:
+        log_event(
+            logger,
+            "mcp_server_stopped",
+            host=host,
+            port=server.server_port,
+            rpc_path=normalized_path,
+            tool_group=tool_group,
+            workspace_root=workspace,
+        )
         server.server_close()
 
 

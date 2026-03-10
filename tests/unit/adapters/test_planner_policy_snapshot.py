@@ -72,7 +72,9 @@ def test_default_policy_engine_returns_pending_for_high_risk_step() -> None:
     result = engine.evaluate(plan)
 
     assert result.approval_status.value == "PENDING"
+    assert result.step_plan.step_map()["s1"].requires_approval is True
     assert any("elevated risk level" in reason for reason in result.reasons)
+    assert any("first executable checkpoint" in reason for reason in result.reasons)
 
 
 def test_filesystem_snapshot_manager_restores_file() -> None:

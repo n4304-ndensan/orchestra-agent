@@ -6,6 +6,9 @@ from typing import Any
 from orchestra_agent.mcp_server.excel_service import ExcelWorkspaceService
 from orchestra_agent.mcp_server.file_service import WorkspaceFileService
 from orchestra_agent.mcp_server.jsonrpc_server import ToolGroup, run_jsonrpc_mcp_server
+from orchestra_agent.mcp_server.logging_utils import get_mcp_logger, log_event
+
+logger = get_mcp_logger(__name__)
 
 
 def create_mcp_server(
@@ -42,6 +45,13 @@ def run_mcp_server(
     server_name: str = "orchestra-workspace",
     tool_group: ToolGroup = "all",
 ) -> None:
+    log_event(
+        logger,
+        "mcp_stdio_server_starting",
+        server_name=server_name,
+        tool_group=tool_group,
+        workspace_root=Path(workspace_root).resolve(),
+    )
     server = create_mcp_server(
         workspace_root=workspace_root,
         server_name=server_name,

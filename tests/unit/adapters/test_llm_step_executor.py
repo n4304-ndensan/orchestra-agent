@@ -112,7 +112,9 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
             client.requests[0].messages[1].content
         )
         file_write_event = [
-            event for event in audit_logger.events if event["event_type"] == "workspace_file_written"
+            event
+            for event in audit_logger.events
+            if event["event_type"] == "workspace_file_written"
         ][-1]
         assert file_write_event["run_id"] == "run-1"
         assert file_write_event["path"].endswith("reports\\summary.txt")
@@ -179,7 +181,9 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
         assert client.requests[0].messages[1].attachments == ()
         assert client.requests[1].messages[1].attachments[0].path == str(requested_file.resolve())
         attachment_event = [
-            event for event in audit_logger.events if event["event_type"] == "llm_attachment_requested"
+            event
+            for event in audit_logger.events
+            if event["event_type"] == "llm_attachment_requested"
         ][-1]
         assert attachment_event["paths"] == ["specs/requirements.txt"]
         assert attachment_event["run_id"] == "run-attach"
@@ -282,5 +286,97 @@ def test_llm_step_executor_supports_ai_review_steps() -> None:
         assert result == {"status": "reviewed", "summary": "No critical issues"}
         assert "orchestra.ai_review" in client.requests[0].messages[1].content
         assert client.requests[0].messages[1].attachments[0].path == str(source_file.resolve())
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.create_file",
+                      "input": {"path": "output/HelloWorld.xlsx"}
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.write_cells",
+                      "input": {
+                        "path": "output/HelloWorld.xlsx",
+                        "sheet_name": "Sheet1",
+                        "cells": {"A1": "HelloWorld"}
+                      }
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.save_file",
+                      "input": {"path": "output/HelloWorld.xlsx"}
+                    }
+                  ]
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-1",
+            name="Excel alias repair",
+            version=1,
+            objective="Normalize Excel MCP aliases",
+        )
+        step = Step(
+            step_id="create_excel_file",
+            name="Create Excel file",
+            description="Create and populate an Excel workbook.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "allowed_mcp_tools": [
+                    "excel.create_file",
+                    "excel.write_cells",
+                    "excel.save_file",
+                ]
+            },
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert mcp_client.calls == [
+            ("excel.create_file", {"file": "output/HelloWorld.xlsx"}),
+            (
+                "excel.write_cells",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "sheet": "Sheet1",
+                    "cells": {"A1": "HelloWorld"},
+                },
+            ),
+            (
+                "excel.save_file",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "output": "output/HelloWorld.xlsx",
+                },
+            ),
+        ]
+        assert result == {
+            "tool_ref": "excel.save_file",
+            "input": {
+                "file": "output/HelloWorld.xlsx",
+                "output": "output/HelloWorld.xlsx",
+            },
+        }
     finally:
         shutil.rmtree(base, ignore_errors=True)

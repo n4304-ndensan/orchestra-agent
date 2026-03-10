@@ -5,6 +5,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from orchestra_agent.adapters import FilesystemStepPlanRepository
 from orchestra_agent.api import RunAPI
@@ -17,6 +18,10 @@ from orchestra_agent.runtime import (
     resolve_file_arg,
     resolve_mcp_endpoints,
     resolve_path,
+)
+from orchestra_agent.shared.tool_input_normalization import (
+    normalize_step_plan_inputs,
+    normalize_tool_input,
 )
 
 
@@ -52,7 +57,11 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
         default=defaults.runtime.workflow_name,
         help="Workflow display name",
     )
-    parser.add_argument("--run-id", default=defaults.runtime.run_id, help="Run identifier")
+    parser.add_argument(
+        "--run-id",
+        default=defaults.runtime.run_id,
+        help="Run identifier. When omitted, a fresh run ID is generated.",
+    )
     parser.add_argument(
         "--workspace",
         default=defaults.workspace.root,
@@ -215,6 +224,7 @@ def _rewrite_step_plan_paths(
     step_plan = step_plan_repo.get(step_plan_id)
     if step_plan is None:
         raise KeyError(f"StepPlan '{step_plan_id}' not found.")
+    normalize_step_plan_inputs(step_plan)
     for step in step_plan.steps:
         for key in ("file", "output"):
             raw = step.resolved_input.get(key)
@@ -294,10 +304,11 @@ def _start_and_resume(
     workflow_id: str,
     step_plan_id: str,
 ) -> dict[str, Any]:
+    run_id = _resolve_run_id(args.run_id)
     run = run_api.start_run(
         workflow_id=workflow_id,
         step_plan_id=step_plan_id,
-        run_id=args.run_id,
+        run_id=run_id,
         approved=args.auto_approve,
     )
     run, resume_attempt = _resume_auto_approvals(args, run_api, run)
@@ -312,6 +323,12 @@ def _start_and_resume(
         run=run,
         resume_attempt=resume_attempt,
     )
+
+
+def _resolve_run_id(explicit_run_id: str | None) -> str:
+    if isinstance(explicit_run_id, str) and explicit_run_id.strip():
+        return explicit_run_id.strip()
+    return f"run-{uuid4().hex[:10]}"
 
 
 def _resume_auto_approvals(
@@ -387,19 +404,37 @@ def _apply_feedback_and_resume(
 
 
 def _prompt_approval_action(run: dict[str, Any]) -> tuple[str, str | None]:
-    message = "Approval is pending."
     pending_approval = run.get("pending_approval")
     if isinstance(pending_approval, dict):
+        message = "Approval is pending."
         detail = pending_approval.get("message")
         if isinstance(detail, str) and detail.strip():
             message = detail
-    elif isinstance(run.get("last_error"), str) and str(run.get("last_error")).strip():
-        message = f"Run failed: {run['last_error']}"
+        _print_approval_preview(message, pending_approval)
+        return _prompt_choice(
+            prompt="Decision? (yes/no/feedback): ",
+            retry_aliases={"yes", "y"},
+        )
 
-    _print_approval_preview(message, pending_approval)
+    last_error = run.get("last_error")
+    if isinstance(last_error, str) and last_error.strip():
+        _print_failure_preview(last_error)
+        return _prompt_choice(
+            prompt="Action? (retry/no/feedback): ",
+            retry_aliases={"retry", "r", "yes", "y"},
+        )
+
+    _print_approval_preview("Approval is pending.", pending_approval)
+    return _prompt_choice(
+        prompt="Decision? (yes/no/feedback): ",
+        retry_aliases={"yes", "y"},
+    )
+
+
+def _prompt_choice(prompt: str, retry_aliases: set[str]) -> tuple[str, str | None]:
     while True:
-        raw = input("Approve? (yes/no/feedback): ").strip().lower()
-        if raw in {"yes", "y"}:
+        raw = input(prompt).strip().lower()
+        if raw in retry_aliases:
             return "approve", None
         if raw in {"no", "n"}:
             return "reject", None
@@ -420,7 +455,14 @@ def _run_requires_terminal_action(run: dict[str, Any]) -> bool:
 
 
 def _print_approval_preview(message: str, pending_approval: Any) -> None:
-    print(f"[approval] {message}")
+    stage = pending_approval.get("stage") if isinstance(pending_approval, dict) else None
+    title = {
+        "PLAN": "Plan review",
+        "PRE_STEP": "Step approval",
+        "POST_STEP": "Step result review",
+    }.get(stage, "Approval required")
+    print(f"[approval] {title}")
+    print(f"  {message}")
     if not isinstance(pending_approval, dict):
         return
     details = pending_approval.get("details")
@@ -434,29 +476,30 @@ def _print_approval_preview(message: str, pending_approval: Any) -> None:
             print(f"  {line}")
 
 
+def _print_failure_preview(error_message: str) -> None:
+    print("[failure] Run failed")
+    print(f"  error     {error_message}")
+    print("  next      retry / no / feedback")
+
+
 def _print_plan(step_plan: StepPlan) -> None:
-    print("StepPlan:")
-    print(
-        json.dumps(
-            {
-                "step_plan_id": step_plan.step_plan_id,
-                "version": step_plan.version,
-                "steps": [
-                    {
-                        "step_id": step.step_id,
-                        "tool_ref": step.tool_ref,
-                        "run": step.run,
-                        "skip": step.skip,
-                        "requires_approval": step.requires_approval,
-                        "resolved_input": step.resolved_input,
-                    }
-                    for step in step_plan.steps
-                ],
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    print("Step Plan")
+    print(f"  id        {step_plan.step_plan_id}")
+    print(f"  version   {step_plan.version}")
+    print(f"  steps     {len(step_plan.steps)}")
+
+    for index, step in enumerate(step_plan.ordered_steps(), start=1):
+        normalized_input = normalize_tool_input(step.tool_ref, step.resolved_input)
+        print()
+        print(f"  {index:02d}. {step.name or step.step_id}")
+        print(f"      step      {step.step_id}")
+        print(f"      tool      {step.tool_ref}")
+        if step.description.strip():
+            print(f"      what      {step.description.strip()}")
+        input_preview = _mapping_preview(normalized_input)
+        if input_preview:
+            print(f"      input     {input_preview}")
+        print(f"      review    {'yes' if step.requires_runtime_approval else 'no'}")
 
 
 def _print_feedback_replan_summary(
@@ -527,7 +570,7 @@ def _print_result(run: dict[str, Any], warning: str | None) -> None:
     if warning is not None:
         print(f"[safe-llm-warning] {warning}")
 
-    print("RunResult:")
+    print("Run Result")
     execution_history = run.get("execution_history", [])
     executed_steps = []
     if isinstance(execution_history, list):
@@ -541,20 +584,50 @@ def _print_result(run: dict[str, Any], warning: str | None) -> None:
                 }
             )
 
-    print(
-        json.dumps(
-            {
-                "run_id": run.get("run_id"),
-                "approval_status": run.get("approval_status"),
-                "current_step_id": run.get("current_step_id"),
-                "pending_approval": run.get("pending_approval"),
-                "last_error": run.get("last_error"),
-                "executed_steps": executed_steps,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    print(f"  run id    {run.get('run_id')}")
+    print(f"  status    {run.get('approval_status')}")
+    current_step_id = run.get("current_step_id")
+    if isinstance(current_step_id, str) and current_step_id.strip():
+        print(f"  current   {current_step_id}")
+    pending_approval = run.get("pending_approval")
+    if isinstance(pending_approval, dict):
+        stage = pending_approval.get("stage")
+        step_id = pending_approval.get("step_id")
+        print(f"  waiting   {stage} / {step_id}")
+    last_error = run.get("last_error")
+    if isinstance(last_error, str) and last_error.strip():
+        print(f"  error     {last_error}")
+    if executed_steps:
+        print("  steps")
+        for item in executed_steps:
+            print(f"    {item.get('step_id')}  {item.get('status')}")
+
+
+def _mapping_preview(payload: dict[str, Any], max_items: int = 4) -> str:
+    if not payload:
+        return ""
+    parts: list[str] = []
+    keys = list(payload.keys())
+    for key in keys[:max_items]:
+        parts.append(f"{key}={_value_preview(payload[key])}")
+    remaining = len(keys) - max_items
+    if remaining > 0:
+        parts.append(f"+{remaining} more")
+    return ", ".join(parts)
+
+
+def _value_preview(value: Any) -> str:
+    if isinstance(value, dict):
+        return "{" + _mapping_preview(value, max_items=2) + "}"
+    if isinstance(value, list):
+        head = ", ".join(_value_preview(item) for item in value[:3])
+        if len(value) > 3:
+            head = f"{head}, +{len(value) - 3} more"
+        return f"[{head}]"
+    if isinstance(value, str):
+        sanitized = value.replace("\r", " ").replace("\n", " ").strip()
+        return sanitized if len(sanitized) <= 72 else f"{sanitized[:69]}..."
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _execute_runtime(args: argparse.Namespace, workspace: Path, runtime: AppRuntime) -> int:

@@ -16,6 +16,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.mcp_client import IMcpClient
 from orchestra_agent.ports.step_executor import IStepExecutor
+from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
 
 
 class LlmStepExecutor(IStepExecutor):
@@ -170,7 +171,10 @@ class LlmStepExecutor(IStepExecutor):
             "7) request_file_attachments paths must come from workspace_file_index.\n"
             "8) write_file path must stay inside workspace_root.\n"
             "9) Use set_result when the final result should differ from the last tool result.\n"
-            "10) Keep output valid JSON with no commentary."
+            "10) For bundled Excel tools, use exact argument names such as file, sheet, "
+            "output, column, cells, image_index, overwrite, start_row, and end_row. "
+            "Do not invent aliases like path or sheet_name.\n"
+            "11) Keep output valid JSON with no commentary."
         )
 
     @staticmethod
@@ -276,7 +280,7 @@ class LlmStepExecutor(IStepExecutor):
             raise ValueError(f"Tool '{tool_ref}' is not in the allowed MCP tool set.")
         if not isinstance(tool_input, dict):
             raise ValueError("call_mcp_tool requires object 'input'.")
-        return mcp_client.call_tool(tool_ref, tool_input)
+        return mcp_client.call_tool(tool_ref, normalize_tool_input(tool_ref, tool_input))
 
     def _write_file(self, raw_action: dict[str, Any]) -> str:
         path = raw_action.get("path")

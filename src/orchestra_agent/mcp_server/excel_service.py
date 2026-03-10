@@ -7,6 +7,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from zipfile import ZipFile
 
+from orchestra_agent.mcp_server.logging_utils import get_mcp_logger, log_event
+
+logger = get_mcp_logger(__name__)
+
 
 class ExcelWorkspaceService:
     _main_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -17,24 +21,35 @@ class ExcelWorkspaceService:
 
     def __init__(self, workspace_root: Path) -> None:
         self._workspace_root = workspace_root.resolve()
+        log_event(logger, "excel_service_initialized", workspace_root=self._workspace_root)
 
     @property
     def workspace_root(self) -> Path:
         return self._workspace_root
 
     def open_file(self, path: str) -> dict[str, Any]:
+        log_event(logger, "excel_open_file_started", path=path)
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=False)
         try:
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet_names": list(workbook.sheetnames),
                 "active_sheet": workbook.active.title,
             }
+            log_event(
+                logger,
+                "excel_open_file_succeeded",
+                path=path,
+                result=result,
+                sheet_count=len(result["sheet_names"]),
+            )
+            return result
         finally:
             workbook.close()
 
     def read_sheet(self, path: str, sheet: str) -> dict[str, Any]:
+        log_event(logger, "excel_read_sheet_started", path=path, sheet=sheet)
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=True)
         try:
@@ -48,16 +63,25 @@ class ExcelWorkspaceService:
                 }
                 if row_payload:
                     rows.append(row_payload)
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet": sheet,
                 "rows": rows,
                 "row_count": len(rows),
             }
+            log_event(
+                logger,
+                "excel_read_sheet_succeeded",
+                path=path,
+                sheet=sheet,
+                row_count=result["row_count"],
+            )
+            return result
         finally:
             workbook.close()
 
     def read_cells(self, path: str, sheet: str, cells: list[str]) -> dict[str, Any]:
+        log_event(logger, "excel_read_cells_started", path=path, sheet=sheet, cells=cells)
         if not cells:
             raise ValueError("cells must contain at least one cell reference.")
         workbook_path = self._resolve_workbook_path(path)
@@ -68,11 +92,19 @@ class ExcelWorkspaceService:
             for cell_ref in cells:
                 normalized_ref = self._normalize_cell_ref(cell_ref)
                 resolved_cells[normalized_ref] = worksheet[normalized_ref].value
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet": sheet,
                 "cells": resolved_cells,
             }
+            log_event(
+                logger,
+                "excel_read_cells_succeeded",
+                path=path,
+                sheet=sheet,
+                cell_count=len(resolved_cells),
+            )
+            return result
         finally:
             workbook.close()
 
@@ -87,6 +119,17 @@ class ExcelWorkspaceService:
         exact: bool = False,
         max_results: int = 100,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_grep_cells_started",
+            path=path,
+            pattern=pattern,
+            sheet=sheet,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            exact=exact,
+            max_results=max_results,
+        )
         if max_results <= 0:
             raise ValueError("max_results must be greater than zero.")
         workbook_path = self._resolve_workbook_path(path)
@@ -117,18 +160,36 @@ class ExcelWorkspaceService:
                             }
                         )
                         if len(matches) >= max_results:
-                            return {
+                            result = {
                                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                                 "pattern": pattern,
                                 "matches": matches,
                                 "truncated": True,
                             }
-            return {
+                            log_event(
+                                logger,
+                                "excel_grep_cells_succeeded",
+                                path=path,
+                                sheet=sheet,
+                                match_count=len(matches),
+                                truncated=True,
+                            )
+                            return result
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "pattern": pattern,
                 "matches": matches,
                 "truncated": False,
             }
+            log_event(
+                logger,
+                "excel_grep_cells_succeeded",
+                path=path,
+                sheet=sheet,
+                match_count=len(matches),
+                truncated=False,
+            )
+            return result
         finally:
             workbook.close()
 
@@ -140,6 +201,15 @@ class ExcelWorkspaceService:
         start_row: int | None = None,
         end_row: int | None = None,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_calculate_sum_started",
+            path=path,
+            sheet=sheet,
+            column=column,
+            start_row=start_row,
+            end_row=end_row,
+        )
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=True)
         try:
@@ -163,7 +233,7 @@ class ExcelWorkspaceService:
 
             normalized_total: int | float = int(total) if total.is_integer() else total
 
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet": sheet,
                 "column": column_letter,
@@ -173,6 +243,17 @@ class ExcelWorkspaceService:
                 "counted_cells": counted_cells,
                 "ignored_cells": ignored_cells,
             }
+            log_event(
+                logger,
+                "excel_calculate_sum_succeeded",
+                path=path,
+                sheet=sheet,
+                column=column_letter,
+                total=normalized_total,
+                counted_cells=counted_cells,
+                ignored_cells=ignored_cells,
+            )
+            return result
         finally:
             workbook.close()
 
@@ -182,6 +263,13 @@ class ExcelWorkspaceService:
         sheet: str = "Sheet1",
         overwrite: bool = False,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_create_file_started",
+            path=path,
+            sheet=sheet,
+            overwrite=overwrite,
+        )
         workbook_path = self._resolve_path_inside_workspace(path)
         self._validate_workbook_extension(path, workbook_path)
 
@@ -206,14 +294,28 @@ class ExcelWorkspaceService:
         finally:
             workbook.close()
 
-        return {
+        result = {
             "file": workbook_path.relative_to(self._workspace_root).as_posix(),
             "sheet_names": [sheet_name],
             "created": True,
             "overwritten": existed,
         }
+        log_event(
+            logger,
+            "excel_create_file_succeeded",
+            path=path,
+            result=result,
+        )
+        return result
 
     def create_sheet(self, path: str, sheet: str, overwrite: bool = False) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_create_sheet_started",
+            path=path,
+            sheet=sheet,
+            overwrite=overwrite,
+        )
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=False)
         try:
@@ -229,15 +331,31 @@ class ExcelWorkspaceService:
                 created = True
 
             workbook.save(workbook_path)
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet": sheet,
                 "created": created,
             }
+            log_event(
+                logger,
+                "excel_create_sheet_succeeded",
+                path=path,
+                sheet=sheet,
+                created=created,
+            )
+            return result
         finally:
             workbook.close()
 
     def write_cells(self, path: str, sheet: str, cells: dict[str, Any]) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_write_cells_started",
+            path=path,
+            sheet=sheet,
+            cell_count=len(cells),
+            cells=cells,
+        )
         workbook_path = self._resolve_workbook_path(path)
         workbook = self._load_workbook(workbook_path, data_only=False)
         try:
@@ -251,21 +369,38 @@ class ExcelWorkspaceService:
                     raise ValueError("cells keys must be non-empty Excel cell references.")
                 worksheet[cell_ref] = value
             workbook.save(workbook_path)
-            return {
+            result = {
                 "file": workbook_path.relative_to(self._workspace_root).as_posix(),
                 "sheet": sheet,
                 "written_cells": len(cells),
             }
+            log_event(
+                logger,
+                "excel_write_cells_succeeded",
+                path=path,
+                sheet=sheet,
+                written_cells=len(cells),
+            )
+            return result
         finally:
             workbook.close()
 
     def list_images(self, path: str, sheet: str | None = None) -> dict[str, Any]:
+        log_event(logger, "excel_list_images_started", path=path, sheet=sheet)
         workbook_path = self._resolve_workbook_path(path)
         image_refs = self._load_image_refs(workbook_path, sheet=sheet)
-        return {
+        result = {
             "file": workbook_path.relative_to(self._workspace_root).as_posix(),
             "images": image_refs,
         }
+        log_event(
+            logger,
+            "excel_list_images_succeeded",
+            path=path,
+            sheet=sheet,
+            image_count=len(image_refs),
+        )
+        return result
 
     def extract_image(
         self,
@@ -276,6 +411,15 @@ class ExcelWorkspaceService:
         output: str | None = None,
         overwrite: bool = False,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_extract_image_started",
+            path=path,
+            sheet=sheet,
+            image_index=image_index,
+            output=output,
+            overwrite=overwrite,
+        )
         if image_index <= 0:
             raise ValueError("image_index must be greater than zero.")
         workbook_path = self._resolve_workbook_path(path)
@@ -311,15 +455,24 @@ class ExcelWorkspaceService:
             media_bytes = archive.read(str(image_ref["zip_path"]))
         output_path.write_bytes(media_bytes)
 
-        return {
+        result = {
             "file": workbook_path.relative_to(self._workspace_root).as_posix(),
             "sheet": sheet,
             "image_index": image_index,
             "anchor_cell": image_ref["anchor_cell"],
             "output": output_path.relative_to(self._workspace_root).as_posix(),
         }
+        log_event(logger, "excel_extract_image_succeeded", path=path, result=result)
+        return result
 
     def save_file(self, path: str, output: str, overwrite: bool = True) -> dict[str, Any]:
+        log_event(
+            logger,
+            "excel_save_file_started",
+            path=path,
+            output=output,
+            overwrite=overwrite,
+        )
         workbook_path = self._resolve_workbook_path(path)
         output_path = self._resolve_path_inside_workspace(output)
         if output_path.exists() and not overwrite and output_path != workbook_path:
@@ -336,10 +489,12 @@ class ExcelWorkspaceService:
         else:
             shutil.copy2(workbook_path, output_path)
 
-        return {
+        result = {
             "file": workbook_path.relative_to(self._workspace_root).as_posix(),
             "output": output_path.relative_to(self._workspace_root).as_posix(),
         }
+        log_event(logger, "excel_save_file_succeeded", path=path, output=output, result=result)
+        return result
 
     def _resolve_workbook_path(self, relative_path: str) -> Path:
         workbook_path = self._resolve_path_inside_workspace(relative_path)

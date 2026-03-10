@@ -3,6 +3,7 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
+ENV PYTHONPATH=/workspace/project/src:/app/src
 
 WORKDIR /app
 
@@ -14,5 +15,5 @@ RUN pip install --upgrade pip \
 
 WORKDIR /workspace/project
 
-ENTRYPOINT ["orchestra-agent-mcp"]
+ENTRYPOINT ["python", "-m", "orchestra_agent.mcp_server"]
 CMD ["--config", "/workspace/project/orchestra-agent.toml", "--workspace", "/workspace/workspace", "--server", "excel"]

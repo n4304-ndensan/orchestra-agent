@@ -98,7 +98,7 @@ class LlmSettings:
 @dataclass(slots=True)
 class RuntimeSettings:
     workflow_name: str = "Automation Workflow"
-    run_id: str = "run-cli"
+    run_id: str | None = None
     auto_approve: bool = True
     interactive_approval: bool = True
     max_resume: int = 50
@@ -187,7 +187,7 @@ class AppConfig:
                     runtime_payload.get("workflow_name"),
                     "Automation Workflow",
                 ),
-                run_id=_as_str(runtime_payload.get("run_id"), "run-cli"),
+                run_id=_as_optional_str(runtime_payload.get("run_id")),
                 auto_approve=_as_bool(runtime_payload.get("auto_approve"), True),
                 interactive_approval=_as_bool(
                     runtime_payload.get("interactive_approval"),

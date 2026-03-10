@@ -4,6 +4,13 @@ import argparse
 
 from orchestra_agent.config import AppConfig, load_app_config, resolve_config_path
 from orchestra_agent.mcp_server import run_jsonrpc_server, run_mcp_server
+from orchestra_agent.mcp_server.logging_utils import (
+    configure_mcp_logging,
+    get_mcp_logger,
+    log_event,
+)
+
+logger = get_mcp_logger(__name__)
 
 
 def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
@@ -61,6 +68,7 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_mcp_logging()
     config_path = resolve_config_path(argv)
     config = load_app_config(config_path)
     parser = build_parser(config)
@@ -76,6 +84,18 @@ def main(argv: list[str] | None = None) -> int:
     port = args.port if args.port is not None else server_settings.port
     path = args.path or server_settings.path
     tool_group = args.tool_group or server_settings.tool_group
+    log_event(
+        logger,
+        "mcp_server_launch_config",
+        config_path=config.source_path,
+        workspace=workspace,
+        server_name=server_name,
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        tool_group=tool_group,
+    )
     if transport == "stdio":
         run_mcp_server(
             workspace_root=workspace,

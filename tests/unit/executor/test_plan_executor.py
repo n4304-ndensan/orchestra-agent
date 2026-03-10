@@ -56,6 +56,25 @@ class FakeExcelMcpClient:
         raise KeyError(f"Unsupported fake tool '{tool_ref}'")
 
 
+class AliasFriendlyExcelMcpClient(FakeExcelMcpClient):
+    def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((tool_ref, dict(input)))
+        if tool_ref == "excel.create_file":
+            file_path = Path(input["file"])
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text("workbook", encoding="utf-8")
+            return {"file": str(file_path)}
+        if tool_ref == "excel.write_cells":
+            cells = input.get("cells", {})
+            return {"written_cells": len(cells) if isinstance(cells, dict) else 0}
+        if tool_ref == "excel.save_file":
+            output = Path(input["output"])
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text("summary", encoding="utf-8")
+            return {"output": str(output)}
+        raise KeyError(f"Unsupported fake tool '{tool_ref}'")
+
+
 class RecordingAgenticExecutor(IStepExecutor):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
@@ -401,6 +420,109 @@ def test_plan_executor_respects_explicit_requires_approval_on_low_risk_step() ->
             isinstance(line, str) and "tool" in line
             for line in state.metadata["approval_context"]["details"]
         )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_plan_executor_normalizes_excel_alias_inputs_before_mcp_call() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        source_file = base / "hello.xlsx"
+        workflow = Workflow(
+            workflow_id="wf-alias",
+            name="Alias workflow",
+            version=1,
+            objective="Create HelloWorld workbook",
+        )
+        plan = StepPlan(
+            step_plan_id="sp-alias",
+            workflow_id=workflow.workflow_id,
+            version=workflow.version,
+            steps=[
+                Step(
+                    step_id="create_excel_file",
+                    name="Create HelloWorld workbook",
+                    description="Create a workbook using alias inputs.",
+                    tool_ref="excel.create_file",
+                    resolved_input={"path": str(source_file)},
+                ),
+                Step(
+                    step_id="write_hello",
+                    name="Write A1",
+                    description="Write HelloWorld to A1 using alias sheet input.",
+                    tool_ref="excel.write_cells",
+                    resolved_input={
+                        "path": str(source_file),
+                        "sheet_name": "Sheet1",
+                        "cells": {"A1": "HelloWorld"},
+                    },
+                    depends_on=["create_excel_file"],
+                ),
+                Step(
+                    step_id="save_excel_file",
+                    name="Save workbook",
+                    description="Save in place when output is omitted.",
+                    tool_ref="excel.save_file",
+                    resolved_input={"path": str(source_file)},
+                    depends_on=["write_hello"],
+                ),
+            ],
+        )
+
+        state_store = PostgresAgentStateStore()
+        step_plan_repo = InMemoryStepPlanRepository()
+        workflow_repo = InMemoryWorkflowRepository()
+        audit_logger = InMemoryAuditLogger()
+        snapshot_manager = FilesystemSnapshotManager(base / "snapshots", workspace_root=base)
+        workflow_repo.save(workflow)
+        step_plan_repo.save(plan)
+
+        mcp_client = AliasFriendlyExcelMcpClient()
+        failure_handler = FailureHandler(
+            snapshot_manager=snapshot_manager,
+            planner=LlmPlanner(),
+            policy_engine=DefaultPolicyEngine(),
+            step_plan_repository=step_plan_repo,
+            audit_logger=audit_logger,
+            workflow_repository=workflow_repo,
+            max_replans=1,
+        )
+        executor = PlanExecutor(
+            mcp_client=mcp_client,
+            state_store=state_store,
+            snapshot_manager=snapshot_manager,
+            audit_logger=audit_logger,
+            failure_handler=failure_handler,
+        )
+        use_case = ExecutePlanUseCase(executor, state_store, audit_logger)
+
+        state = _auto_approve_until_done(
+            execute_use_case=use_case,
+            workflow=workflow,
+            step_plan=plan,
+            run_id="run-alias",
+        )
+
+        assert state.approval_status == ApprovalStatus.APPROVED
+        assert mcp_client.calls == [
+            ("excel.create_file", {"file": str(source_file)}),
+            (
+                "excel.write_cells",
+                {
+                    "file": str(source_file),
+                    "sheet": "Sheet1",
+                    "cells": {"A1": "HelloWorld"},
+                },
+            ),
+            (
+                "excel.save_file",
+                {
+                    "file": str(source_file),
+                    "output": str(source_file),
+                },
+            ),
+        ]
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

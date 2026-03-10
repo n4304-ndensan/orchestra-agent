@@ -88,3 +88,4 @@ def test_load_app_config_without_path_returns_defaults() -> None:
 
     assert isinstance(config, AppConfig)
     assert config.workspace.workflow_root == "workflow"
+    assert config.runtime.run_id is None

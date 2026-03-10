@@ -147,6 +147,9 @@ docker compose run --rm orchestra-cli "output/HelloWorld.xlsx を作成し、She
 `runtime.auto_approve = false` かつ `runtime.interactive_approval = true` の場合、
 CLI は承認待ちで `yes/no/feedback` を聞きます。
 
+`--run-id` を省略すると、CLI は毎回新しい run ID を自動生成します。
+同じ run を再開したいときだけ `--run-id` を明示してください。
+
 ## 🧭 やりたいこと別レシピ
 
 ### 1. 売上集計したい
@@ -204,6 +207,7 @@ uv run orchestra-agent --config .\orchestra-agent.toml `
 - `auto_approve`: `true` なら自動承認
 - `interactive_approval`: `false` にすると対話承認しない
 - `max_resume`: 承認リジューム上限
+- `run_id`: 固定したい場合だけ設定。通常は未設定で毎回自動生成
 
 ## 📦 workspace に保存されるもの
 

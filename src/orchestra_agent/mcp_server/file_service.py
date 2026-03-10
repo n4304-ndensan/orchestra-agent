@@ -5,6 +5,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from orchestra_agent.mcp_server.logging_utils import get_mcp_logger, log_event
+
+logger = get_mcp_logger(__name__)
+
 
 class WorkspaceFileService:
     def __init__(self, workspace_root: Path, max_read_bytes: int = 1_000_000) -> None:
@@ -12,12 +16,19 @@ class WorkspaceFileService:
             raise ValueError("max_read_bytes must be greater than zero.")
         self._workspace_root = workspace_root.resolve()
         self._max_read_bytes = max_read_bytes
+        log_event(
+            logger,
+            "file_service_initialized",
+            workspace_root=self._workspace_root,
+            max_read_bytes=max_read_bytes,
+        )
 
     @property
     def workspace_root(self) -> Path:
         return self._workspace_root
 
     def list_entries(self, relative_path: str = ".") -> list[dict[str, Any]]:
+        log_event(logger, "fs_list_entries_started", path=relative_path)
         target_dir = self._resolve_within_workspace(relative_path)
         if not target_dir.exists():
             raise FileNotFoundError(f"Directory '{relative_path}' does not exist.")
@@ -40,6 +51,7 @@ class WorkspaceFileService:
                     "size": size,
                 }
             )
+        log_event(logger, "fs_list_entries_succeeded", path=relative_path, entry_count=len(entries))
         return entries
 
     def find_entries(
@@ -52,6 +64,16 @@ class WorkspaceFileService:
         include_dirs: bool = False,
         max_results: int = 200,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "fs_find_entries_started",
+            path=path,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            include_dirs=include_dirs,
+            max_results=max_results,
+        )
         if max_results <= 0:
             raise ValueError("max_results must be greater than zero.")
         target_dir = self._resolve_within_workspace(path)
@@ -84,14 +106,24 @@ class WorkspaceFileService:
                 truncated = True
                 break
 
-        return {
+        result = {
             "path": target_dir.relative_to(self._workspace_root).as_posix(),
             "pattern": pattern,
             "matches": matches,
             "truncated": truncated,
         }
+        log_event(
+            logger,
+            "fs_find_entries_succeeded",
+            path=path,
+            pattern=pattern,
+            match_count=len(matches),
+            truncated=truncated,
+        )
+        return result
 
     def read_text(self, relative_path: str, encoding: str = "utf-8") -> str:
+        log_event(logger, "fs_read_text_started", path=relative_path, encoding=encoding)
         target = self._resolve_within_workspace(relative_path)
         if not target.exists():
             raise FileNotFoundError(f"File '{relative_path}' does not exist.")
@@ -103,7 +135,15 @@ class WorkspaceFileService:
                 f"File '{relative_path}' is too large ({file_size} bytes). "
                 f"Limit is {self._max_read_bytes} bytes."
             )
-        return target.read_text(encoding=encoding)
+        content = target.read_text(encoding=encoding)
+        log_event(
+            logger,
+            "fs_read_text_succeeded",
+            path=relative_path,
+            encoding=encoding,
+            bytes=file_size,
+        )
+        return content
 
     def grep_text(
         self,
@@ -116,6 +156,17 @@ class WorkspaceFileService:
         max_results: int = 200,
         encoding: str = "utf-8",
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "fs_grep_text_started",
+            path=path,
+            pattern=pattern,
+            case_sensitive=case_sensitive,
+            regex=regex,
+            file_glob=file_glob,
+            max_results=max_results,
+            encoding=encoding,
+        )
         if max_results <= 0:
             raise ValueError("max_results must be greater than zero.")
         target_dir = self._resolve_within_workspace(path)
@@ -145,12 +196,21 @@ class WorkspaceFileService:
                 truncated = True
                 break
 
-        return {
+        result = {
             "path": target_dir.relative_to(self._workspace_root).as_posix(),
             "pattern": pattern,
             "matches": matches,
             "truncated": truncated,
         }
+        log_event(
+            logger,
+            "fs_grep_text_succeeded",
+            path=path,
+            pattern=pattern,
+            match_count=len(matches),
+            truncated=truncated,
+        )
+        return result
 
     def write_text(
         self,
@@ -159,6 +219,14 @@ class WorkspaceFileService:
         overwrite: bool = False,
         encoding: str = "utf-8",
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "fs_write_text_started",
+            path=relative_path,
+            overwrite=overwrite,
+            encoding=encoding,
+            bytes=len(content.encode(encoding)),
+        )
         target = self._resolve_within_workspace(relative_path)
         if target.exists() and not overwrite:
             raise FileExistsError(
@@ -166,10 +234,12 @@ class WorkspaceFileService:
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding=encoding)
-        return {
+        result = {
             "path": target.relative_to(self._workspace_root).as_posix(),
             "bytes": target.stat().st_size,
         }
+        log_event(logger, "fs_write_text_succeeded", path=relative_path, result=result)
+        return result
 
     def copy_file(
         self,
@@ -178,6 +248,13 @@ class WorkspaceFileService:
         *,
         overwrite: bool = False,
     ) -> dict[str, Any]:
+        log_event(
+            logger,
+            "fs_copy_file_started",
+            source=source_path,
+            destination=destination_path,
+            overwrite=overwrite,
+        )
         source = self._resolve_within_workspace(source_path)
         destination = self._resolve_within_workspace(destination_path)
 
@@ -198,11 +275,18 @@ class WorkspaceFileService:
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-        return {
+        result = {
             "source": source.relative_to(self._workspace_root).as_posix(),
             "destination": destination.relative_to(self._workspace_root).as_posix(),
             "bytes": destination.stat().st_size,
         }
+        log_event(
+            logger,
+            "fs_copy_file_succeeded",
+            source=source_path,
+            destination=destination_path,
+        )
+        return result
 
     def _resolve_within_workspace(self, relative_path: str) -> Path:
         raw = Path(relative_path)

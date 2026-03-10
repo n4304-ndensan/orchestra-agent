@@ -27,6 +27,7 @@ from orchestra_agent.ports import (
     ISnapshotManager,
     IStepExecutor,
 )
+from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
 
 type ResolvedValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 type ApprovalStage = Literal["PLAN", "PRE_STEP", "POST_STEP"]
@@ -168,7 +169,11 @@ class PlanExecutor:
             if not self._ensure_pre_step_approval(workflow, step_plan, step, state):
                 return "paused", None
 
-            resolved_input = self._resolve_step_input(step.resolved_input, step_results)
+            resolved_input = self._resolve_step_input(
+                step.tool_ref,
+                step.resolved_input,
+                step_results,
+            )
             snapshot_ref = self._create_pre_step_snapshot(step, step_plan, resolved_input)
             record = ExecutionRecord.pending(step.step_id)
             record.metadata["step_plan_version"] = step_plan.version
@@ -525,12 +530,13 @@ class PlanExecutor:
 
     @classmethod
     def _step_approval_details(cls, step: Step) -> list[str]:
+        normalized_input = normalize_tool_input(step.tool_ref, step.resolved_input)
         lines = [
             f"step     {step.step_id}",
             f"tool     {step.tool_ref}",
             f"what     {step.description}",
         ]
-        input_preview = cls._mapping_preview(step.resolved_input)
+        input_preview = cls._mapping_preview(normalized_input)
         if input_preview:
             lines.append(f"input    {input_preview}")
         return lines
@@ -552,7 +558,8 @@ class PlanExecutor:
         parts = []
         if step.description.strip():
             parts.append(step.description.strip())
-        input_preview = cls._mapping_preview(step.resolved_input)
+        normalized_input = normalize_tool_input(step.tool_ref, step.resolved_input)
+        input_preview = cls._mapping_preview(normalized_input)
         if input_preview:
             parts.append(input_preview)
         return " | ".join(parts) if parts else "-"
@@ -676,13 +683,14 @@ class PlanExecutor:
 
     def _resolve_step_input(
         self,
+        tool_ref: str,
         input_payload: dict[str, Any],
         step_results: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         resolved = self._resolve_input(input_payload, step_results)
         if not isinstance(resolved, dict):
             raise TypeError("Resolved step input must be a dictionary.")
-        return resolved
+        return normalize_tool_input(tool_ref, resolved)
 
     def _resolve_input(
         self,

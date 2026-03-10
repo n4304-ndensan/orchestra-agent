@@ -10,6 +10,7 @@ from orchestra_agent.ports import (
     IStepPlanRepository,
     PolicyEvaluationResult,
 )
+from orchestra_agent.shared.tool_input_normalization import normalize_step_plan_inputs
 
 
 class CompileStepPlanUseCase:
@@ -33,6 +34,7 @@ class CompileStepPlanUseCase:
         ):
             plan = self._planner.compile_step_plan(workflow)
             policy_result = self._policy_engine.evaluate(plan)
+            normalize_step_plan_inputs(policy_result.step_plan)
             self._step_plan_repository.save(policy_result.step_plan)
         step_plan_path: str | None = None
         step_plan_path_getter = getattr(self._step_plan_repository, "step_plan_json_path", None)
@@ -58,4 +60,4 @@ class CompileStepPlanUseCase:
         return policy_result
 
     def compile_only(self, workflow: Workflow) -> StepPlan:
-        return self._planner.compile_step_plan(workflow)
+        return normalize_step_plan_inputs(self._planner.compile_step_plan(workflow))

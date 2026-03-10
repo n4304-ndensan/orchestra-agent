@@ -133,7 +133,12 @@ class StructuredLlmPlanner(IPlanner):
             "8) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
             "backup is sufficient.\n"
             "9) Respect feedback_history as the latest correction source.\n"
-            "10) Keep output valid JSON and do not add commentary."
+            "10) Set requires_approval=true on the first executable step when the plan "
+            "contains any risky or user-visible mutation checkpoint.\n"
+            "11) For bundled Excel tools, use exact argument names such as file, sheet, "
+            "output, column, cells, image_index, overwrite, start_row, and end_row. "
+            "Do not invent aliases like path or sheet_name.\n"
+            "12) Keep output valid JSON and do not add commentary."
         )
 
     @staticmethod

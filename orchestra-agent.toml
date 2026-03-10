@@ -58,7 +58,6 @@ max_tokens = 1200
 
 [runtime]
 workflow_name = "Automation Workflow"
-run_id = "run-cli"
 auto_approve = false
 interactive_approval = true
 max_resume = 50

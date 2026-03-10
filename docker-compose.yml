@@ -3,6 +3,8 @@ x-mcp-server-env: &mcp-server-env
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
   ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
+  ORCHESTRA_MCP_LOG_LEVEL: ${ORCHESTRA_MCP_LOG_LEVEL:-DEBUG}
+  PYTHONPATH: /workspace/project/src:/app/src
 
 x-mcp-runtime: &mcp-runtime
   working_dir: /workspace/project
@@ -78,6 +80,7 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PYTHONPATH: /workspace/project/src:/app/src
     ports:
       - "9000:9000"
     restart: unless-stopped
@@ -120,6 +123,7 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      PYTHONPATH: /workspace/project/src:/app/src
     depends_on:
       orchestra-mcp-files:
         condition: service_healthy
