@@ -16,7 +16,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.mcp_client import IMcpClient
 from orchestra_agent.ports.step_executor import IStepExecutor
-from orchestra_agent.shared.error_handling import text_preview
+from orchestra_agent.shared.error_handling import clean_exception_message, text_preview
 from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
 
 
@@ -94,8 +94,19 @@ class LlmStepExecutor(IStepExecutor):
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
             )
-            raw = self._llm_client.generate(request)
-            parsed = self._extract_json(raw)
+            try:
+                raw = self._llm_client.generate(request)
+                parsed = self._extract_json(raw)
+            except Exception as exc:  # noqa: BLE001
+                fallback_result = self._fallback_standard_step_execution(
+                    step=step,
+                    resolved_input=resolved_input,
+                    mcp_client=mcp_client,
+                    exc=exc,
+                )
+                if fallback_result is not None:
+                    return fallback_result
+                raise
             requested = self._consume_attachment_request(
                 parsed=parsed,
                 indexed_files=indexed_files,
@@ -317,6 +328,29 @@ class LlmStepExecutor(IStepExecutor):
         if self._audit_logger is None:
             return
         self._audit_logger.record(enrich_observation_event(event))
+
+    def _fallback_standard_step_execution(
+        self,
+        *,
+        step: Step,
+        resolved_input: dict[str, Any],
+        mcp_client: IMcpClient,
+        exc: BaseException,
+    ) -> dict[str, Any] | None:
+        if step.tool_ref.startswith("orchestra."):
+            return None
+
+        reason = text_preview(clean_exception_message(exc))
+        self._record_event(
+            {
+                "event_type": "llm_step_executor_fallback",
+                "step_id": step.step_id,
+                "planned_tool_ref": step.tool_ref,
+                "reason": reason,
+            }
+        )
+        normalized_input = normalize_tool_input(step.tool_ref, resolved_input)
+        return mcp_client.call_tool(step.tool_ref, normalized_input)
 
     def _available_tool_catalog(
         self,

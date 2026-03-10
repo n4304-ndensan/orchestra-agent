@@ -9,7 +9,7 @@ audit_root = ".orchestra_state/audit"
 [mcp]
 name = "orchestra-automation"
 transport = "http"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8000
 path = "/mcp"
 tool_group = "all"
@@ -17,29 +17,35 @@ tool_group = "all"
 [[mcp.servers]]
 name = "files"
 transport = "http"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8010
 path = "/mcp"
 tool_group = "files"
-endpoint = "http://orchestra-mcp-files:8010/mcp"
+endpoint = "http://127.0.0.1:8010/mcp"
 
 [[mcp.servers]]
 name = "excel"
 transport = "http"
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8020
 path = "/mcp"
 tool_group = "excel"
-endpoint = "http://orchestra-mcp-excel:8020/mcp"
+endpoint = "http://127.0.0.1:8020/mcp"
 
 [api]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 9000
 
 [llm]
-# Set to "openai" or "google" for full AI-controlled planning and MCP runtime orchestration.
-provider = "google"
+# Private-use browser-backed ChatGPT custom GPT integration.
+# This mode does not use OPENAI_API_KEY / GEMINI_API_KEY.
+provider = "chatgpt_playwright"
 planner_mode = "full"
+chatgpt_url = "https://chatgpt.com/g/g-69919f16473081918e2c40de0c8be30f-shikiho-image-json-extractor"
+chatgpt_chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+chatgpt_profile_dir = "./.chatgpt-profile"
+chatgpt_port = 9222
+# Alternative providers remain available when switching provider back to "openai" or "google".
 openai_model = "gpt-4.1-mini"
 openai_api_key_env = "OPENAI_API_KEY"
 openai_base_url = "https://api.openai.com"

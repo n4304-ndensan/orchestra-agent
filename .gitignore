@@ -17,6 +17,7 @@ wheels/
 .tmp/
 .tmp-tests/
 .orchestra_snapshots/
+.chatgpt-profile/
 .env
 
 # Workspace runtime artifacts

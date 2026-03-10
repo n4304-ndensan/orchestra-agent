@@ -26,6 +26,16 @@ class FakeLlmClient:
         return self._responses.pop(0)
 
 
+class FailingLlmClient:
+    def __init__(self, message: str) -> None:
+        self.message = message
+        self.requests: list[LlmGenerateRequest] = []
+
+    def generate(self, request: LlmGenerateRequest) -> str:
+        self.requests.append(request)
+        raise RuntimeError(self.message)
+
+
 class FakeMcpClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -378,5 +388,88 @@ def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> No
                 "output": "output/HelloWorld.xlsx",
             },
         }
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_falls_back_to_planned_mcp_tool_on_llm_failure() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FailingLlmClient(
+            "ChatGPT Playwright session initialization failed for "
+            "'https://chatgpt.com/g/test': CDPポートが応答しません"
+        )
+        audit_logger = InMemoryAuditLogger()
+        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
+        workflow = Workflow(
+            workflow_id="wf-1",
+            name="Excel create fallback",
+            version=1,
+            objective="Create workbook",
+        )
+        step = Step(
+            step_id="create_excel_file",
+            name="Create workbook",
+            description="Create workbook output/HelloWorld.xlsx",
+            tool_ref="excel.create_file",
+            resolved_input={"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"},
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "tool_ref": "excel.create_file",
+            "input": {"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"},
+        }
+        assert mcp_client.calls == [
+            ("excel.create_file", {"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"})
+        ]
+        fallback_event = [
+            event
+            for event in audit_logger.events
+            if event["event_type"] == "llm_step_executor_fallback"
+        ][-1]
+        assert fallback_event["step_id"] == "create_excel_file"
+        assert fallback_event["planned_tool_ref"] == "excel.create_file"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_does_not_fallback_for_orchestra_steps() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FailingLlmClient("ChatGPT Playwright session initialization failed")
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-1",
+            name="AI review",
+            version=1,
+            objective="Review workbook",
+        )
+        step = Step(
+            step_id="review",
+            name="Review workbook",
+            description="Review workbook with AI.",
+            tool_ref="orchestra.ai_review",
+            resolved_input={},
+        )
+
+        with pytest.raises(RuntimeError, match="ChatGPT Playwright session initialization failed"):
+            executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=step.resolved_input,
+                step_results={},
+                mcp_client=FakeMcpClient(),
+            )
     finally:
         shutil.rmtree(base, ignore_errors=True)
