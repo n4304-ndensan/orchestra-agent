@@ -89,6 +89,10 @@ class LlmSettings:
     google_api_key_env: str = "GEMINI_API_KEY"
     google_base_url: str = "https://generativelanguage.googleapis.com"
     google_timeout: float = 60.0
+    chatgpt_url: str = "https://chatgpt.com/ja-JP/"
+    chatgpt_chrome_path: str = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    chatgpt_profile_dir: str | None = None
+    chatgpt_port: int = 9222
     tls_verify: bool = True
     tls_ca_bundle: str | None = None
     temperature: float = 0.0
@@ -177,6 +181,16 @@ class AppConfig:
                     "https://generativelanguage.googleapis.com",
                 ),
                 google_timeout=_as_float(llm_payload.get("google_timeout"), 60.0),
+                chatgpt_url=_as_str(
+                    llm_payload.get("chatgpt_url"),
+                    "https://chatgpt.com/ja-JP/",
+                ),
+                chatgpt_chrome_path=_as_str(
+                    llm_payload.get("chatgpt_chrome_path"),
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                ),
+                chatgpt_profile_dir=_as_optional_str(llm_payload.get("chatgpt_profile_dir")),
+                chatgpt_port=_as_int(llm_payload.get("chatgpt_port"), 9222),
                 tls_verify=_as_bool(llm_payload.get("tls_verify"), True),
                 tls_ca_bundle=_as_optional_str(llm_payload.get("tls_ca_bundle")),
                 temperature=_as_float(llm_payload.get("temperature"), 0.0),
@@ -338,8 +352,10 @@ def _as_mcp_server_settings(value: Any) -> list[McpServerSettings]:
 def _as_llm_provider(value: Any, default: LlmProviderName) -> LlmProviderName:
     if value is None:
         return default
-    if value not in ("none", "file", "openai", "google"):
-        raise ValueError("llm.provider must be one of: none, file, openai, google.")
+    if value not in ("none", "file", "openai", "google", "chatgpt_playwright"):
+        raise ValueError(
+            "llm.provider must be one of: none, file, openai, google, chatgpt_playwright."
+        )
     return cast(LlmProviderName, value)
 
 

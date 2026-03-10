@@ -240,7 +240,7 @@ def _add_workspace_storage_arguments(parser: argparse.ArgumentParser, defaults: 
 def _add_llm_arguments(parser: argparse.ArgumentParser, defaults: AppConfig) -> None:
     parser.add_argument(
         "--llm-provider",
-        choices=["none", "file", "openai", "google"],
+        choices=["none", "file", "openai", "google", "chatgpt_playwright"],
         default=defaults.llm.provider,
         help="LLM proposal source for planner augmentation.",
     )
@@ -290,6 +290,27 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, defaults: AppConfig) -> 
         type=float,
         default=defaults.llm.google_timeout,
         help="Google Gemini request timeout seconds.",
+    )
+    parser.add_argument(
+        "--llm-chatgpt-url",
+        default=defaults.llm.chatgpt_url,
+        help="ChatGPT page URL or custom GPT URL when --llm-provider chatgpt_playwright.",
+    )
+    parser.add_argument(
+        "--llm-chatgpt-chrome-path",
+        default=defaults.llm.chatgpt_chrome_path,
+        help="Chrome executable path for the Playwright-backed ChatGPT client.",
+    )
+    parser.add_argument(
+        "--llm-chatgpt-profile-dir",
+        default=defaults.llm.chatgpt_profile_dir,
+        help="Persistent Chrome profile directory for the Playwright-backed ChatGPT client.",
+    )
+    parser.add_argument(
+        "--llm-chatgpt-port",
+        type=int,
+        default=defaults.llm.chatgpt_port,
+        help="Remote debugging port for the Playwright-backed ChatGPT client.",
     )
     parser.add_argument(
         "--llm-tls-verify",
@@ -931,6 +952,11 @@ def _build_runtime_from_args(
         if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
         else None
     )
+    llm_chatgpt_profile_dir = (
+        config.resolve_from_config(args.llm_chatgpt_profile_dir)
+        if args.llm_chatgpt_profile_dir is not None and str(args.llm_chatgpt_profile_dir).strip()
+        else None
+    )
     runtime = build_runtime(
         RuntimeConfig(
             workspace=paths.workspace,
@@ -950,6 +976,10 @@ def _build_runtime_from_args(
             llm_google_api_key_env=args.llm_google_api_key_env,
             llm_google_base_url=args.llm_google_base_url,
             llm_google_timeout=args.llm_google_timeout,
+            llm_chatgpt_url=args.llm_chatgpt_url,
+            llm_chatgpt_chrome_path=args.llm_chatgpt_chrome_path,
+            llm_chatgpt_profile_dir=llm_chatgpt_profile_dir,
+            llm_chatgpt_port=args.llm_chatgpt_port,
             llm_tls_verify=args.llm_tls_verify,
             llm_tls_ca_bundle=llm_tls_ca_bundle,
             llm_planner_mode=args.llm_planner_mode,

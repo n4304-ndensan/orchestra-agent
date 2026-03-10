@@ -34,3 +34,30 @@ def test_parse_feedback_input_supports_inline_messages() -> None:
     assert _parse_feedback_input("feedback output pathを修正") == "output pathを修正"
     assert _parse_feedback_input("f write A1 instead") == "write A1 instead"
     assert _parse_feedback_input("yes") is None
+
+
+def test_build_parser_accepts_chatgpt_playwright_runtime_arguments() -> None:
+    parser = build_parser(AppConfig())
+
+    args = parser.parse_args(
+        [
+            "run",
+            "画像を解析してJSON化して",
+            "--llm-provider",
+            "chatgpt_playwright",
+            "--llm-chatgpt-url",
+            "https://chatgpt.com/g/private-agent",
+            "--llm-chatgpt-chrome-path",
+            r"C:\Chrome\chrome.exe",
+            "--llm-chatgpt-profile-dir",
+            ".chatgpt-profile",
+            "--llm-chatgpt-port",
+            "9333",
+        ]
+    )
+
+    assert args.llm_provider == "chatgpt_playwright"
+    assert args.llm_chatgpt_url == "https://chatgpt.com/g/private-agent"
+    assert args.llm_chatgpt_chrome_path == r"C:\Chrome\chrome.exe"
+    assert args.llm_chatgpt_profile_dir == ".chatgpt-profile"
+    assert args.llm_chatgpt_port == 9333

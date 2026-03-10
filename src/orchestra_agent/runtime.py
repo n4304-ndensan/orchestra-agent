@@ -1,4 +1,8 @@
-from orchestra_agent.adapters import GoogleGeminiLlmClient, OpenAILlmClient
+from orchestra_agent.adapters import (
+    ChatGptPlaywrightLlmClient,
+    GoogleGeminiLlmClient,
+    OpenAILlmClient,
+)
 from orchestra_agent.runtime_support import (
     AppRuntime,
     DefaultLlmProviderFactory,
@@ -29,6 +33,7 @@ def _build_llm_provider(config: RuntimeConfig):
     return build_llm_provider(
         config,
         factory=DefaultLlmProviderFactory(
+            chatgpt_playwright_client_type=ChatGptPlaywrightLlmClient,
             openai_client_type=OpenAILlmClient,
             google_client_type=GoogleGeminiLlmClient,
         ),

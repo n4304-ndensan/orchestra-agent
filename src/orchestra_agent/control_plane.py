@@ -327,7 +327,7 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--llm-provider",
-        choices=["none", "file", "openai", "google"],
+        choices=["none", "file", "openai", "google", "chatgpt_playwright"],
         default=defaults.llm.provider,
         help="LLM proposal source for planner augmentation.",
     )
@@ -347,6 +347,16 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
         default=defaults.llm.google_base_url,
     )
     parser.add_argument("--llm-google-timeout", type=float, default=defaults.llm.google_timeout)
+    parser.add_argument("--llm-chatgpt-url", default=defaults.llm.chatgpt_url)
+    parser.add_argument(
+        "--llm-chatgpt-chrome-path",
+        default=defaults.llm.chatgpt_chrome_path,
+    )
+    parser.add_argument(
+        "--llm-chatgpt-profile-dir",
+        default=defaults.llm.chatgpt_profile_dir,
+    )
+    parser.add_argument("--llm-chatgpt-port", type=int, default=defaults.llm.chatgpt_port)
     parser.add_argument(
         "--llm-tls-verify",
         action=argparse.BooleanOptionalAction,
@@ -386,6 +396,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.llm_tls_ca_bundle is not None and str(args.llm_tls_ca_bundle).strip()
             else None
         )
+        llm_chatgpt_profile_dir = (
+            config.resolve_from_config(args.llm_chatgpt_profile_dir)
+            if args.llm_chatgpt_profile_dir is not None
+            and str(args.llm_chatgpt_profile_dir).strip()
+            else None
+        )
         runtime = build_runtime(
             RuntimeConfig(
                 workspace=workspace,
@@ -405,6 +421,10 @@ def main(argv: list[str] | None = None) -> int:
                 llm_google_api_key_env=args.llm_google_api_key_env,
                 llm_google_base_url=args.llm_google_base_url,
                 llm_google_timeout=args.llm_google_timeout,
+                llm_chatgpt_url=args.llm_chatgpt_url,
+                llm_chatgpt_chrome_path=args.llm_chatgpt_chrome_path,
+                llm_chatgpt_profile_dir=llm_chatgpt_profile_dir,
+                llm_chatgpt_port=args.llm_chatgpt_port,
                 llm_tls_verify=args.llm_tls_verify,
                 llm_tls_ca_bundle=llm_tls_ca_bundle,
                 llm_planner_mode=args.llm_planner_mode,

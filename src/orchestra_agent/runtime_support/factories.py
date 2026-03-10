@@ -6,6 +6,7 @@ from typing import Protocol
 
 from orchestra_agent import __version__
 from orchestra_agent.adapters import (
+    ChatGptPlaywrightLlmClient,
     DefaultPolicyEngine,
     FilesystemAgentStateStore,
     FilesystemAuditLogger,
@@ -58,7 +59,7 @@ class McpClientBundle:
 @dataclass(slots=True)
 class LlmProviderBundle:
     proposal_provider: IStepProposalProvider | None
-    llm_client: OpenAILlmClient | GoogleGeminiLlmClient | None
+    llm_client: ILlmClient | None
 
 
 class IMcpClientFactory(Protocol):
@@ -104,9 +105,13 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
         *,
         openai_client_type: type[OpenAILlmClient] = OpenAILlmClient,
         google_client_type: type[GoogleGeminiLlmClient] = GoogleGeminiLlmClient,
+        chatgpt_playwright_client_type: type[ChatGptPlaywrightLlmClient] = (
+            ChatGptPlaywrightLlmClient
+        ),
     ) -> None:
         self._openai_client_type = openai_client_type
         self._google_client_type = google_client_type
+        self._chatgpt_playwright_client_type = chatgpt_playwright_client_type
 
     def create(self, config: RuntimeConfig) -> LlmProviderBundle:
         if config.llm_provider == "none":
@@ -131,6 +136,22 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
                 base_url=config.llm_openai_base_url,
                 timeout_seconds=config.llm_openai_timeout,
                 verify=verify,
+            )
+            return LlmProviderBundle(
+                proposal_provider=LlmStepProposalProvider(
+                    llm_client=llm_client,
+                    temperature=config.llm_temperature,
+                    max_tokens=config.llm_max_tokens,
+                ),
+                llm_client=llm_client,
+            )
+
+        if config.llm_provider == "chatgpt_playwright":
+            llm_client = self._chatgpt_playwright_client_type(
+                start_url=config.llm_chatgpt_url,
+                chrome_path=config.llm_chatgpt_chrome_path,
+                profile_dir=config.llm_chatgpt_profile_dir,
+                port=config.llm_chatgpt_port,
             )
             return LlmProviderBundle(
                 proposal_provider=LlmStepProposalProvider(
@@ -312,7 +333,7 @@ class DefaultRuntimeFactory(IRuntimeFactory):
 
     @staticmethod
     def _build_logged_llm_client(
-        llm_client: OpenAILlmClient | GoogleGeminiLlmClient | None,
+        llm_client: ILlmClient | None,
         audit_logger: FilesystemAuditLogger,
     ) -> ILlmClient | None:
         if llm_client is None:
@@ -357,7 +378,7 @@ def build_llm_provider(
     config: RuntimeConfig,
     *,
     factory: ILlmProviderFactory | None = None,
-) -> tuple[IStepProposalProvider | None, OpenAILlmClient | GoogleGeminiLlmClient | None]:
+) -> tuple[IStepProposalProvider | None, ILlmClient | None]:
     llm_bundle = (factory or DefaultLlmProviderFactory()).create(config)
     return llm_bundle.proposal_provider, llm_bundle.llm_client
 
@@ -365,7 +386,7 @@ def build_llm_provider(
 def resolve_planner_mode(config: RuntimeConfig) -> PlannerMode:
     if config.llm_planner_mode is not None:
         return config.llm_planner_mode
-    if config.llm_provider in ("openai", "google"):
+    if config.llm_provider in ("openai", "google", "chatgpt_playwright"):
         return "full"
     if config.llm_provider == "file":
         return "augmented"

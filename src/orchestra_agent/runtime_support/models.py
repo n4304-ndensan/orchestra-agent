@@ -12,7 +12,7 @@ from orchestra_agent.adapters.db import (
 from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
 from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
 
-type LlmProviderName = Literal["none", "file", "openai", "google"]
+type LlmProviderName = Literal["none", "file", "openai", "google", "chatgpt_playwright"]
 type PlannerMode = Literal["deterministic", "augmented", "full"]
 
 
@@ -44,6 +44,10 @@ class RuntimeConfig:
     llm_google_api_key_env: str = "GEMINI_API_KEY"
     llm_google_base_url: str = "https://generativelanguage.googleapis.com"
     llm_google_timeout: float = 60.0
+    llm_chatgpt_url: str = "https://chatgpt.com/ja-JP/"
+    llm_chatgpt_chrome_path: str = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    llm_chatgpt_profile_dir: Path | None = None
+    llm_chatgpt_port: int = 9222
     llm_tls_verify: bool = True
     llm_tls_ca_bundle: Path | None = None
     llm_planner_mode: PlannerMode | None = None

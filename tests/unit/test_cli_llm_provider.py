@@ -119,3 +119,60 @@ def test_build_llm_provider_rejects_missing_tls_ca_bundle(
                 llm_tls_ca_bundle=Path("missing-ca.crt"),
             )
         )
+
+
+def test_build_llm_provider_supports_chatgpt_playwright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class DummyChatGptPlaywrightLlmClient:
+        def __init__(
+            self,
+            *,
+            start_url: str,
+            chrome_path: str,
+            profile_dir: Path | None,
+            port: int,
+        ) -> None:
+            captured["start_url"] = start_url
+            captured["chrome_path"] = chrome_path
+            captured["profile_dir"] = profile_dir
+            captured["port"] = port
+
+        def generate(self, request: Any) -> str:
+            return "{}"
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        runtime_module,
+        "ChatGptPlaywrightLlmClient",
+        DummyChatGptPlaywrightLlmClient,
+    )
+
+    provider, client = _build_llm_provider(
+        RuntimeConfig(
+            workspace=Path("."),
+            workflow_root=Path("workflow"),
+            plan_root=Path("plan"),
+            snapshots_dir=Path(".orchestra_snapshots"),
+            state_root=Path(".orchestra_state/runs"),
+            audit_root=Path(".orchestra_state/audit"),
+            llm_provider="chatgpt_playwright",
+            llm_chatgpt_url="https://chatgpt.com/g/private-agent",
+            llm_chatgpt_chrome_path=r"C:\Chrome\chrome.exe",
+            llm_chatgpt_profile_dir=Path(".chatgpt-profile"),
+            llm_chatgpt_port=9333,
+        )
+    )
+
+    assert isinstance(provider, LlmStepProposalProvider)
+    assert isinstance(client, DummyChatGptPlaywrightLlmClient)
+    assert captured == {
+        "start_url": "https://chatgpt.com/g/private-agent",
+        "chrome_path": r"C:\Chrome\chrome.exe",
+        "profile_dir": Path(".chatgpt-profile"),
+        "port": 9333,
+    }

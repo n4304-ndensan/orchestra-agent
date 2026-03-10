@@ -5,6 +5,7 @@ description = "Config-driven, human-in-the-loop automation orchestration product
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "chat-gpt-playwright",
     "httpx>=0.28.1",
     "langgraph>=1.0.9",
     "pydantic>=2.12.5",
@@ -64,3 +65,6 @@ exclude = "(^pytest-cache-files-.*$)|(^\\.pytest_cache.*$)|(^\\.tmp.*$)|(^\\.uv-
 [[tool.mypy.overrides]]
 module = "langgraph.*"
 ignore_missing_imports = true
+
+[tool.uv.sources]
+chat-gpt-playwright = { git = "https://github.com/n4304-ndensan/chat-gpt-playwright.git" }

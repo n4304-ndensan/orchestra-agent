@@ -9,7 +9,11 @@ from orchestra_agent.adapters.db import (
     XmlWorkflowRepository,
 )
 from orchestra_agent.adapters.execution import LlmStepExecutor
-from orchestra_agent.adapters.llm import GoogleGeminiLlmClient, OpenAILlmClient
+from orchestra_agent.adapters.llm import (
+    ChatGptPlaywrightLlmClient,
+    GoogleGeminiLlmClient,
+    OpenAILlmClient,
+)
 from orchestra_agent.adapters.mcp import (
     JsonRpcMcpClient,
     MockExcelMcpClient,
@@ -32,6 +36,7 @@ __all__ = [
     "FilesystemAuditLogger",
     "FilesystemStepPlanRepository",
     "FilesystemSnapshotManager",
+    "ChatGptPlaywrightLlmClient",
     "GoogleGeminiLlmClient",
     "InMemoryAuditLogger",
     "InMemoryStepPlanRepository",
