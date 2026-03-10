@@ -195,8 +195,13 @@ def test_plan_executor_runs_full_excel_flow() -> None:
 
         statuses = [record.status.value for record in state.execution_history]
         assert statuses == ["SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS", "SUCCESS"]
-        assert len(state.snapshot_refs) == 6
-        assert all(record.snapshot_ref is not None for record in state.execution_history)
+        assert len(state.snapshot_refs) == 3
+        assert state.execution_history[0].snapshot_ref is None
+        assert state.execution_history[1].snapshot_ref is None
+        assert state.execution_history[2].snapshot_ref is None
+        assert state.execution_history[3].snapshot_ref is not None
+        assert state.execution_history[4].snapshot_ref is not None
+        assert state.execution_history[5].snapshot_ref is not None
         assert (base / "summary.xlsx").is_file()
     finally:
         shutil.rmtree(base, ignore_errors=True)
@@ -612,7 +617,12 @@ def test_plan_executor_accepts_feedback_during_plan_review() -> None:
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "plan"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -650,7 +660,12 @@ def test_plan_executor_accepts_feedback_during_pre_step_review() -> None:
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "save_file"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -691,6 +706,11 @@ def test_plan_executor_accepts_feedback_after_failure_without_approval_context()
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "open_file"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)

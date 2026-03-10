@@ -14,14 +14,18 @@ class JsonRpcMcpClient(IMcpClient):
     def __init__(self, endpoint: str, timeout_seconds: float = 30.0) -> None:
         self._endpoint = endpoint
         self._client = httpx.Client(timeout=timeout_seconds)
+        self._tool_catalog_cache: list[dict[str, Any]] | None = None
 
     def list_tools(self) -> list[str]:
         return [tool["name"] for tool in self.describe_tools()]
 
     def describe_tools(self) -> list[dict[str, Any]]:
+        if self._tool_catalog_cache is not None:
+            return [dict(tool) for tool in self._tool_catalog_cache]
         result = self._request("tools/list", {})
         tools = result.get("tools", [])
-        return normalize_mcp_tool_catalog(tools)
+        self._tool_catalog_cache = normalize_mcp_tool_catalog(tools)
+        return [dict(tool) for tool in self._tool_catalog_cache]
 
     def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
         result = self._request(

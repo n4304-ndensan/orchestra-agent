@@ -79,6 +79,46 @@ def test_llm_planner_generates_cell_write_plan_for_workbook_creation() -> None:
     }
 
 
+def test_llm_planner_generates_abstract_content_write_plan_without_explicit_cell_value() -> None:
+    workflow = Workflow(
+        workflow_id="wf-essay",
+        name="Essay workbook",
+        version=1,
+        objective=(
+            "output/HelloWorld.xlsx を作成し、"
+            "Sheet1 に 人間の過ちについて考えて 書き込んで保存して"
+        ),
+    )
+    planner = LlmPlanner(plan_style="abstract")
+    plan = planner.compile_step_plan(workflow)
+
+    assert [step.step_id for step in plan.ordered_steps()] == [
+        "prepare_workbook",
+        "generate_requested_content",
+        "apply_requested_update",
+        "finalize_workbook",
+    ]
+    assert plan.step_map()["prepare_workbook"].resolved_input == {
+        "file": "output/HelloWorld.xlsx",
+        "sheet": "Sheet1",
+        "output": "output/HelloWorld.xlsx",
+        "create_file": True,
+    }
+    assert plan.step_map()["generate_requested_content"].resolved_input == {
+        "topic": "人間の過ちについて考えて",
+        "language": "ja",
+        "format": "short text suitable for a worksheet cell",
+        "target_cell": "A1",
+    }
+    assert plan.step_map()["apply_requested_update"].resolved_input == {
+        "file": "output/HelloWorld.xlsx",
+        "sheet": "Sheet1",
+        "cell": "A1",
+        "content_source_step": "generate_requested_content",
+        "output": "output/HelloWorld.xlsx",
+    }
+
+
 def test_default_policy_engine_returns_pending_for_high_risk_step() -> None:
     plan = StepPlan(
         step_plan_id="sp-1",

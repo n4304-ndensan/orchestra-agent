@@ -10,7 +10,7 @@ type RuntimeActionType = Literal[
     "finish",
 ]
 
-STEP_RUNTIME_PROTOCOL_VERSION = 1
+STEP_RUNTIME_PROTOCOL_VERSION = 2
 
 
 @dataclass(slots=True, frozen=True)

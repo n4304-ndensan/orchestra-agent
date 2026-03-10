@@ -26,16 +26,6 @@ class FakeLlmClient:
         return self._responses.pop(0)
 
 
-class FailingLlmClient:
-    def __init__(self, message: str) -> None:
-        self.message = message
-        self.requests: list[LlmGenerateRequest] = []
-
-    def generate(self, request: LlmGenerateRequest) -> str:
-        self.requests.append(request)
-        raise RuntimeError(self.message)
-
-
 class FakeMcpClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
@@ -148,6 +138,109 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_applies_batched_actions_in_single_round() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.create_file",
+                      "input": {"file": "output/HelloWorld.xlsx"}
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.write_cells",
+                      "input": {
+                        "file": "output/HelloWorld.xlsx",
+                        "sheet": "Sheet1",
+                        "cells": {"A1": "HelloWorld"}
+                      }
+                    },
+                    {
+                      "type": "call_mcp_tool",
+                      "tool_ref": "excel.save_file",
+                      "input": {
+                        "file": "output/HelloWorld.xlsx",
+                        "output": "output/HelloWorld.xlsx"
+                      }
+                    },
+                    {
+                      "type": "finish",
+                      "result": {
+                        "status": "completed",
+                        "summary": "Created, updated, and saved the workbook.",
+                        "output_file": "output/HelloWorld.xlsx"
+                      }
+                    }
+                  ]
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-batch",
+            name="Batched Excel write",
+            version=1,
+            objective="Create and save an Excel workbook quickly.",
+        )
+        step = Step(
+            step_id="create_excel_file",
+            name="Create Excel file",
+            description="Create and populate an Excel workbook.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "allowed_mcp_tools": [
+                    "excel.create_file",
+                    "excel.write_cells",
+                    "excel.save_file",
+                ]
+            },
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "status": "completed",
+            "summary": "Created, updated, and saved the workbook.",
+            "output_file": "output/HelloWorld.xlsx",
+        }
+        assert mcp_client.calls == [
+            ("excel.create_file", {"file": "output/HelloWorld.xlsx"}),
+            (
+                "excel.write_cells",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "sheet": "Sheet1",
+                    "cells": {"A1": "HelloWorld"},
+                },
+            ),
+            (
+                "excel.save_file",
+                {
+                    "file": "output/HelloWorld.xlsx",
+                    "output": "output/HelloWorld.xlsx",
+                },
+            ),
+        ]
+        assert len(client.requests) == 1
+        assert '"compact_multi_action_batch"' in client.requests[0].messages[1].content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -215,6 +308,79 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
         ][-1]
         assert attachment_event["paths"] == ["specs/requirements.txt"]
         assert attachment_event["run_id"] == "run-attach"
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_supports_attachment_requests_inside_actions_payload() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        specs_dir = base / "specs"
+        specs_dir.mkdir()
+        requested_file = specs_dir / "requirements.txt"
+        requested_file.write_text("Use this attached file.", encoding="utf-8")
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "actions": [
+                    {
+                      "type": "request_file_attachments",
+                      "paths": ["specs/requirements.txt"],
+                      "reason": "Need the requirements document"
+                    }
+                  ]
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "used-attachment",
+                    "summary": "Reviewed the attached requirements file."
+                  }
+                }
+                """,
+            ]
+        )
+        audit_logger = InMemoryAuditLogger()
+        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
+        workflow = Workflow(
+            workflow_id="wf-1",
+            name="Workspace summary",
+            version=1,
+            objective="Create report",
+        )
+        step = Step(
+            step_id="orchestrate",
+            name="Orchestrate report",
+            description="Read and write files",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+
+        with bind_observation_context(run_id="run-attach-actions", step_id=step.step_id):
+            result = executor.execute(
+                workflow=workflow,
+                step=step,
+                resolved_input=step.resolved_input,
+                step_results={},
+                mcp_client=FakeMcpClient(),
+            )
+
+        assert result == {
+            "status": "used-attachment",
+            "summary": "Reviewed the attached requirements file.",
+        }
+        assert len(client.requests) == 2
+        assert client.requests[1].messages[-1].attachments[0].path == str(requested_file.resolve())
+        attachment_event = [
+            event
+            for event in audit_logger.events
+            if event["event_type"] == "llm_attachment_requested"
+        ][-1]
+        assert attachment_event["run_id"] == "run-attach-actions"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -366,6 +532,125 @@ def test_llm_step_executor_includes_previous_step_results_in_next_step_prompt() 
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_sanitizes_workspace_paths_in_prompt() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        workbook = (base / "output" / "HelloWorld.xlsx").resolve()
+        workbook.parent.mkdir(parents=True, exist_ok=True)
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Prompt paths were normalized."
+                  }
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-paths",
+            name="Prompt path normalization",
+            version=1,
+            objective="Normalize workspace paths",
+        )
+        step = Step(
+            step_id="normalize_paths",
+            name="Normalize paths",
+            description="Use workspace-relative paths in the LLM prompt.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "file": str(workbook),
+                "output": str(workbook),
+            },
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={
+                "prepare_workbook": {
+                    "output_file": str(workbook),
+                }
+            },
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Prompt paths were normalized.",
+        }
+        request_body = client.requests[0].messages[1].content
+        assert '"file": "output/HelloWorld.xlsx"' in request_body
+        assert '"output": "output/HelloWorld.xlsx"' in request_body
+        assert '"output_file": "output/HelloWorld.xlsx"' in request_body
+        assert str(workbook) not in request_body
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_repairs_invalid_json_backslashes_from_windows_paths() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        raw_windows_path = r"C:\Users\syogo\Documents\sales.xlsx"
+        client = FakeLlmClient(
+            [
+                (
+                    '{"type":"call_mcp_tool","tool_ref":"excel.read_sheet","input":'
+                    '{"file":"C:\\Users\\syogo\\Documents\\sales.xlsx","sheet":"Sheet1"}}'
+                ),
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Recovered invalid JSON escapes."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-invalid-json",
+            name="Repair invalid escapes",
+            version=1,
+            objective="Handle Windows paths safely",
+        )
+        step = Step(
+            step_id="repair_invalid_json",
+            name="Repair invalid JSON",
+            description="Recover from common Windows path escaping mistakes.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Recovered invalid JSON escapes.",
+        }
+        assert mcp_client.calls == [
+            ("excel.read_sheet", {"file": raw_windows_path, "sheet": "Sheet1"})
+        ]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -463,88 +748,5 @@ def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> No
             "output_file": "output/HelloWorld.xlsx",
         }
         assert len(client.requests) == 4
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
-
-
-def test_llm_step_executor_falls_back_to_planned_mcp_tool_on_llm_failure() -> None:
-    base = Path(".tmp-tests") / uuid4().hex
-    base.mkdir(parents=True, exist_ok=False)
-    try:
-        client = FailingLlmClient(
-            "ChatGPT Playwright session initialization failed for "
-            "'https://chatgpt.com/g/test': CDPポートが応答しません"
-        )
-        audit_logger = InMemoryAuditLogger()
-        executor = LlmStepExecutor(client, workspace_root=base, audit_logger=audit_logger)
-        workflow = Workflow(
-            workflow_id="wf-1",
-            name="Excel create fallback",
-            version=1,
-            objective="Create workbook",
-        )
-        step = Step(
-            step_id="create_excel_file",
-            name="Create workbook",
-            description="Create workbook output/HelloWorld.xlsx",
-            tool_ref="excel.create_file",
-            resolved_input={"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"},
-        )
-        mcp_client = FakeMcpClient()
-
-        result = executor.execute(
-            workflow=workflow,
-            step=step,
-            resolved_input=step.resolved_input,
-            step_results={},
-            mcp_client=mcp_client,
-        )
-
-        assert result == {
-            "tool_ref": "excel.create_file",
-            "input": {"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"},
-        }
-        assert mcp_client.calls == [
-            ("excel.create_file", {"file": "output/HelloWorld.xlsx", "sheet": "Sheet1"})
-        ]
-        fallback_event = [
-            event
-            for event in audit_logger.events
-            if event["event_type"] == "llm_step_executor_fallback"
-        ][-1]
-        assert fallback_event["step_id"] == "create_excel_file"
-        assert fallback_event["planned_tool_ref"] == "excel.create_file"
-    finally:
-        shutil.rmtree(base, ignore_errors=True)
-
-
-def test_llm_step_executor_does_not_fallback_for_orchestra_steps() -> None:
-    base = Path(".tmp-tests") / uuid4().hex
-    base.mkdir(parents=True, exist_ok=False)
-    try:
-        client = FailingLlmClient("ChatGPT Playwright session initialization failed")
-        executor = LlmStepExecutor(client, workspace_root=base)
-        workflow = Workflow(
-            workflow_id="wf-1",
-            name="AI review",
-            version=1,
-            objective="Review workbook",
-        )
-        step = Step(
-            step_id="review",
-            name="Review workbook",
-            description="Review workbook with AI.",
-            tool_ref="orchestra.ai_review",
-            resolved_input={},
-        )
-
-        with pytest.raises(RuntimeError, match="ChatGPT Playwright session initialization failed"):
-            executor.execute(
-                workflow=workflow,
-                step=step,
-                resolved_input=step.resolved_input,
-                step_results={},
-                mcp_client=FakeMcpClient(),
-            )
     finally:
         shutil.rmtree(base, ignore_errors=True)

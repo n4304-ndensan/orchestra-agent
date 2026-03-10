@@ -38,6 +38,21 @@ class PlanExecutor:
     _approval_context_key = "approval_context"
     _approved_plan_version_key = "approved_step_plan_version"
     _repair_attempt_key = "repair_attempts"
+    _read_only_tool_refs = frozenset(
+        {
+            "excel.calculate_sum",
+            "excel.grep_cells",
+            "excel.list_images",
+            "excel.open_file",
+            "excel.read_cells",
+            "excel.read_sheet",
+            "fs_find_entries",
+            "fs_grep_text",
+            "fs_list_entries",
+            "fs_read_text",
+            "server_ping",
+        }
+    )
 
     def __init__(
         self,
@@ -136,12 +151,12 @@ class PlanExecutor:
             return state
 
         self._apply_recovery_decision(state, decision)
-        self._clear_approval_context(state)
-        state.approval_status = ApprovalStatus.PENDING
-        state.current_step_id = None
+        state.last_error = None
         state.metadata["last_feedback"] = feedback
         state.metadata["feedback_step_id"] = review_target
-        self._state_store.save(state)
+        assert decision.workflow is not None
+        assert decision.step_plan is not None
+        self._set_plan_approval_pending(decision.workflow, decision.step_plan, state)
         return state
 
     def _execute_single_plan(
@@ -640,7 +655,7 @@ class PlanExecutor:
     ) -> str | None:
         snapshot_scope = step.backup_scope
         if snapshot_scope == BackupScope.NONE:
-            snapshot_scope = self._default_snapshot_scope
+            snapshot_scope = self._default_snapshot_scope_for_step(step)
         if snapshot_scope == BackupScope.NONE:
             return None
         metadata = {
@@ -653,6 +668,14 @@ class PlanExecutor:
         if isinstance(file_path, str):
             metadata["file"] = file_path
         return self._snapshot_manager.create_snapshot(scope=snapshot_scope, metadata=metadata)
+
+    @classmethod
+    def _default_snapshot_scope_for_step(cls, step: Step) -> BackupScope:
+        if step.tool_ref == "orchestra.ai_review":
+            return BackupScope.NONE
+        if step.tool_ref in cls._read_only_tool_refs:
+            return BackupScope.NONE
+        return BackupScope.WORKSPACE
 
     def _resolve_step_input(
         self,
