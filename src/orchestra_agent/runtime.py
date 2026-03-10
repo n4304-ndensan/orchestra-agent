@@ -59,6 +59,8 @@ class RuntimeConfig:
     llm_google_api_key_env: str = "GEMINI_API_KEY"
     llm_google_base_url: str = "https://generativelanguage.googleapis.com"
     llm_google_timeout: float = 60.0
+    llm_tls_verify: bool = True
+    llm_tls_ca_bundle: Path | None = None
     llm_planner_mode: PlannerMode | None = None
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1200
@@ -203,6 +205,10 @@ def _build_llm_provider(
         proposal_path = resolve_file_arg(config.llm_proposal_file, config.workspace)
         return JsonFileStepProposalProvider(proposal_path), None
 
+    verify: bool | str = config.llm_tls_verify
+    if config.llm_tls_ca_bundle is not None:
+        verify = str(config.llm_tls_ca_bundle)
+
     if config.llm_provider == "openai":
         api_key = os.getenv(config.llm_openai_api_key_env)
         if api_key is None or not api_key.strip():
@@ -215,6 +221,7 @@ def _build_llm_provider(
             model=config.llm_openai_model,
             base_url=config.llm_openai_base_url,
             timeout_seconds=config.llm_openai_timeout,
+            verify=verify,
         )
         provider = LlmStepProposalProvider(
             llm_client=llm_client,
@@ -234,6 +241,7 @@ def _build_llm_provider(
         model=config.llm_google_model,
         base_url=config.llm_google_base_url,
         timeout_seconds=config.llm_google_timeout,
+        verify=verify,
     )
     provider = LlmStepProposalProvider(
         llm_client=google_client,

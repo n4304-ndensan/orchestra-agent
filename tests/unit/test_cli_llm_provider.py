@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import orchestra_agent.runtime as runtime_module
 from orchestra_agent.adapters.llm import GoogleGeminiLlmClient
 from orchestra_agent.adapters.planner import LlmStepProposalProvider
 from orchestra_agent.runtime import RuntimeConfig, _build_llm_provider
@@ -48,3 +50,49 @@ def test_build_llm_provider_requires_google_api_key(monkeypatch: pytest.MonkeyPa
                 llm_provider="google",
             )
         )
+
+
+def test_build_llm_provider_passes_tls_ca_bundle_to_openai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    captured: dict[str, Any] = {}
+
+    class DummyOpenAILlmClient:
+        def __init__(
+            self,
+            api_key: str,
+            model: str,
+            base_url: str,
+            timeout_seconds: float,
+            verify: bool | str,
+        ) -> None:
+            captured["api_key"] = api_key
+            captured["model"] = model
+            captured["base_url"] = base_url
+            captured["timeout_seconds"] = timeout_seconds
+            captured["verify"] = verify
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(runtime_module, "OpenAILlmClient", DummyOpenAILlmClient)
+
+    provider, client = _build_llm_provider(
+        RuntimeConfig(
+            workspace=Path("."),
+            workflow_root=Path("workflow"),
+            plan_root=Path("plan"),
+            snapshots_dir=Path(".orchestra_snapshots"),
+            state_root=Path(".orchestra_state/runs"),
+            audit_root=Path(".orchestra_state/audit"),
+            llm_provider="openai",
+            llm_tls_verify=True,
+            llm_tls_ca_bundle=Path("certs/company.crt"),
+        )
+    )
+
+    assert isinstance(provider, LlmStepProposalProvider)
+    assert isinstance(client, DummyOpenAILlmClient)
+    assert Path(str(captured["verify"])) == Path("certs/company.crt")

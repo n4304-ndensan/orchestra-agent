@@ -89,6 +89,8 @@ class LlmSettings:
     google_api_key_env: str = "GEMINI_API_KEY"
     google_base_url: str = "https://generativelanguage.googleapis.com"
     google_timeout: float = 60.0
+    tls_verify: bool = True
+    tls_ca_bundle: str | None = None
     temperature: float = 0.0
     max_tokens: int = 1200
 
@@ -98,6 +100,7 @@ class RuntimeSettings:
     workflow_name: str = "Automation Workflow"
     run_id: str = "run-cli"
     auto_approve: bool = True
+    interactive_approval: bool = True
     max_resume: int = 50
     print_plan: bool = True
     repair_max_attempts: int = 3
@@ -174,6 +177,8 @@ class AppConfig:
                     "https://generativelanguage.googleapis.com",
                 ),
                 google_timeout=_as_float(llm_payload.get("google_timeout"), 60.0),
+                tls_verify=_as_bool(llm_payload.get("tls_verify"), True),
+                tls_ca_bundle=_as_optional_str(llm_payload.get("tls_ca_bundle")),
                 temperature=_as_float(llm_payload.get("temperature"), 0.0),
                 max_tokens=_as_int(llm_payload.get("max_tokens"), 1200),
             ),
@@ -184,6 +189,10 @@ class AppConfig:
                 ),
                 run_id=_as_str(runtime_payload.get("run_id"), "run-cli"),
                 auto_approve=_as_bool(runtime_payload.get("auto_approve"), True),
+                interactive_approval=_as_bool(
+                    runtime_payload.get("interactive_approval"),
+                    True,
+                ),
                 max_resume=_as_int(runtime_payload.get("max_resume"), 50),
                 print_plan=_as_bool(runtime_payload.get("print_plan"), True),
                 repair_max_attempts=_as_int(
@@ -195,6 +204,9 @@ class AppConfig:
 
     def resolve_workspace(self, raw_path: str | None = None) -> Path:
         return _resolve_from_base(raw_path or self.workspace.root, self._config_dir())
+
+    def resolve_from_config(self, raw_path: str) -> Path:
+        return _resolve_from_base(raw_path, self._config_dir())
 
     @staticmethod
     def resolve_within_workspace(raw_path: str, workspace: Path) -> Path:

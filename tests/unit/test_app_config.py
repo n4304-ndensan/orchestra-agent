@@ -42,8 +42,13 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
                 'endpoint = "http://orchestra-mcp-excel:8020/mcp"',
                 'tool_group = "excel"',
                 "",
+                "[llm]",
+                "tls_verify = false",
+                'tls_ca_bundle = "./certs/company.crt"',
+                "",
                 "[runtime]",
                 "auto_approve = false",
+                "interactive_approval = false",
             ]
         ),
         encoding="utf-8",
@@ -57,8 +62,14 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
         "http://orchestra-mcp-excel:8020/mcp",
     )
     assert config.mcp.resolve_server("excel").tool_group == "excel"
+    assert config.llm.tls_verify is False
+    assert config.llm.tls_ca_bundle == "./certs/company.crt"
     assert config.runtime.auto_approve is False
+    assert config.runtime.interactive_approval is False
     assert config.resolve_workspace() == (sandbox_dir / "runtime").resolve()
+    assert config.resolve_from_config(config.llm.tls_ca_bundle or "") == (
+        sandbox_dir / "certs" / "company.crt"
+    ).resolve()
     assert config.resolve_within_workspace("workflow", config.resolve_workspace()) == (
         sandbox_dir / "runtime" / "workflow"
     ).resolve()

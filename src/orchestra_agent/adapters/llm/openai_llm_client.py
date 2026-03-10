@@ -26,12 +26,14 @@ class OpenAILlmClient(ILlmClient):
         model: str,
         base_url: str = "https://api.openai.com",
         timeout_seconds: float = 60.0,
+        verify: bool | str = True,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._client = httpx.Client(
             timeout=timeout_seconds,
+            verify=verify,
             transport=transport,
             headers={
                 "Authorization": f"Bearer {api_key}",
