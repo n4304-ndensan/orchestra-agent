@@ -18,7 +18,7 @@ from orchestra_agent.ports.llm_client import (
     LlmMessage,
 )
 from orchestra_agent.ports.planner import IPlanner
-from orchestra_agent.shared.error_handling import text_preview
+from orchestra_agent.shared.llm_json import extract_json_payload
 
 
 class IStepProposalProvider(Protocol):
@@ -100,20 +100,7 @@ class LlmStepProposalProvider(IStepProposalProvider):
 
     @staticmethod
     def _extract_json(raw_text: str) -> Any:
-        stripped = raw_text.strip()
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            preview = text_preview(stripped)
-            raise ValueError(f"LLM proposal is not valid JSON. preview={preview}")
-
-        candidate = stripped[start : end + 1]
-        return json.loads(candidate)
+        return extract_json_payload(raw_text, label="LLM proposal")
 
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:

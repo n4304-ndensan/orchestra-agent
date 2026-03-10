@@ -25,3 +25,4 @@ workspace/.orchestra_snapshots/
 workspace/.orchestra_state/
 workspace/plan/
 workspace/workflow/
+.chatgpt-profile

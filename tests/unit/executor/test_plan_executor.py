@@ -612,7 +612,12 @@ def test_plan_executor_accepts_feedback_during_plan_review() -> None:
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "plan"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -650,7 +655,12 @@ def test_plan_executor_accepts_feedback_during_pre_step_review() -> None:
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "save_file"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -691,6 +701,11 @@ def test_plan_executor_accepts_feedback_after_failure_without_approval_context()
         assert updated.workflow_version == 2
         assert updated.step_plan_version == 2
         assert updated.approval_status == ApprovalStatus.PENDING
+        assert updated.last_error is None
         assert updated.metadata.get("feedback_step_id") == "open_file"
+        updated_context = updated.metadata.get("approval_context")
+        assert isinstance(updated_context, dict)
+        assert updated_context.get("stage") == "PLAN"
+        assert updated_context.get("step_id") == "__plan__"
     finally:
         shutil.rmtree(base, ignore_errors=True)

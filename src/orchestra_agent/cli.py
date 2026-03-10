@@ -361,6 +361,8 @@ def _rewrite_step_plan_paths(
         raise KeyError(f"StepPlan '{step_plan_id}' not found.")
     normalize_step_plan_inputs(step_plan)
     for step in step_plan.steps:
+        if step.tool_ref.startswith("orchestra."):
+            continue
         for key in ("file", "output"):
             raw = step.resolved_input.get(key)
             if isinstance(raw, str):

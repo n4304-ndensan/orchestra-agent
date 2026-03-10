@@ -136,12 +136,12 @@ class PlanExecutor:
             return state
 
         self._apply_recovery_decision(state, decision)
-        self._clear_approval_context(state)
-        state.approval_status = ApprovalStatus.PENDING
-        state.current_step_id = None
+        state.last_error = None
         state.metadata["last_feedback"] = feedback
         state.metadata["feedback_step_id"] = review_target
-        self._state_store.save(state)
+        assert decision.workflow is not None
+        assert decision.step_plan is not None
+        self._set_plan_approval_pending(decision.workflow, decision.step_plan, state)
         return state
 
     def _execute_single_plan(

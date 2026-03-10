@@ -17,7 +17,7 @@ from orchestra_agent.ports.llm_client import (
     LlmMessage,
 )
 from orchestra_agent.ports.planner import IPlanner
-from orchestra_agent.shared.error_handling import text_preview
+from orchestra_agent.shared.llm_json import extract_json_payload
 from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
 
 
@@ -145,21 +145,7 @@ class StructuredLlmPlanner(IPlanner):
 
     @staticmethod
     def _extract_json(raw_text: str) -> Any:
-        stripped = raw_text.strip()
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            preview = text_preview(stripped)
-            raise ValueError(
-                "Structured LLM planner output is not valid JSON. "
-                f"preview={preview}"
-            )
-        return json.loads(stripped[start : end + 1])
+        return extract_json_payload(raw_text, label="Structured LLM planner output")
 
     @staticmethod
     def _build_step_plan(

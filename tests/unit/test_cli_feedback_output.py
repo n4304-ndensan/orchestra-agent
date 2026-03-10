@@ -13,6 +13,7 @@ from orchestra_agent.cli import (
     _print_feedback_replan_summary,
     _print_plan,
     _print_result,
+    _rewrite_step_plan_paths,
 )
 from orchestra_agent.domain import BackupScope, Step, StepPlan, Workflow
 from orchestra_agent.runtime import RuntimeArtifacts
@@ -223,5 +224,56 @@ def test_artifact_paths_for_run_use_latest_versions() -> None:
         assert payload["workflow"].endswith("workflow_v3.xml")
         assert payload["step_plan"].endswith("step_plan_v3.json")
         assert payload["run_state"].endswith("run-latest.json")
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_rewrite_step_plan_paths_keeps_orchestra_step_paths_relative() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        repo = FilesystemStepPlanRepository(base / "plan")
+        step_plan = StepPlan(
+            step_plan_id="sp-orchestra",
+            workflow_id="wf-orchestra",
+            version=1,
+            steps=[
+                Step(
+                    step_id="agentic",
+                    name="Agentic update",
+                    description="Use orchestra runtime.",
+                    tool_ref="orchestra.llm_execute",
+                    resolved_input={
+                        "file": "output/HelloWorld.xlsx",
+                        "output": "output/HelloWorld.xlsx",
+                    },
+                    backup_scope=BackupScope.NONE,
+                ),
+                Step(
+                    step_id="save_file",
+                    name="Save workbook",
+                    description="Save workbook directly.",
+                    tool_ref="excel.save_file",
+                    resolved_input={
+                        "file": "output/HelloWorld.xlsx",
+                        "output": "output/HelloWorld.xlsx",
+                    },
+                    backup_scope=BackupScope.NONE,
+                ),
+            ],
+        )
+        repo.save(step_plan)
+
+        rewritten = _rewrite_step_plan_paths(repo, "sp-orchestra", base)
+
+        assert rewritten.step_map()["agentic"].resolved_input == {
+            "file": "output/HelloWorld.xlsx",
+            "output": "output/HelloWorld.xlsx",
+        }
+        workbook_path = str((base / "output" / "HelloWorld.xlsx").resolve())
+        assert rewritten.step_map()["save_file"].resolved_input == {
+            "file": workbook_path,
+            "output": workbook_path,
+        }
     finally:
         shutil.rmtree(base, ignore_errors=True)

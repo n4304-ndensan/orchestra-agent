@@ -356,6 +356,125 @@ def test_llm_step_executor_includes_previous_step_results_in_next_step_prompt() 
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_sanitizes_workspace_paths_in_prompt() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        workbook = (base / "output" / "HelloWorld.xlsx").resolve()
+        workbook.parent.mkdir(parents=True, exist_ok=True)
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Prompt paths were normalized."
+                  }
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-paths",
+            name="Prompt path normalization",
+            version=1,
+            objective="Normalize workspace paths",
+        )
+        step = Step(
+            step_id="normalize_paths",
+            name="Normalize paths",
+            description="Use workspace-relative paths in the LLM prompt.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "file": str(workbook),
+                "output": str(workbook),
+            },
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={
+                "prepare_workbook": {
+                    "output_file": str(workbook),
+                }
+            },
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Prompt paths were normalized.",
+        }
+        request_body = client.requests[0].messages[1].content
+        assert '"file": "output/HelloWorld.xlsx"' in request_body
+        assert '"output": "output/HelloWorld.xlsx"' in request_body
+        assert '"output_file": "output/HelloWorld.xlsx"' in request_body
+        assert str(workbook) not in request_body
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_repairs_invalid_json_backslashes_from_windows_paths() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        raw_windows_path = r"C:\Users\syogo\Documents\sales.xlsx"
+        client = FakeLlmClient(
+            [
+                (
+                    '{"type":"call_mcp_tool","tool_ref":"excel.read_sheet","input":'
+                    '{"file":"C:\\Users\\syogo\\Documents\\sales.xlsx","sheet":"Sheet1"}}'
+                ),
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Recovered invalid JSON escapes."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-invalid-json",
+            name="Repair invalid escapes",
+            version=1,
+            objective="Handle Windows paths safely",
+        )
+        step = Step(
+            step_id="repair_invalid_json",
+            name="Repair invalid JSON",
+            description="Recover from common Windows path escaping mistakes.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+        mcp_client = FakeMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Recovered invalid JSON escapes.",
+        }
+        assert mcp_client.calls == [
+            ("excel.read_sheet", {"file": raw_windows_path, "sheet": "Sheet1"})
+        ]
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)

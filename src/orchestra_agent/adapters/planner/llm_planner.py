@@ -29,6 +29,16 @@ class CellWriteRequest:
     create_file: bool
 
 
+@dataclass(slots=True, frozen=True)
+class GeneratedContentWriteRequest:
+    file: str
+    output: str
+    sheet: str
+    cell: str
+    topic: str
+    create_file: bool
+
+
 type PlanStyle = Literal["concrete", "abstract"]
 
 
@@ -50,12 +60,31 @@ class LlmPlanner(IPlanner):
     def compile_step_plan(self, workflow: Workflow) -> StepPlan:
         objective = workflow.objective
         cell_write_request = self._extract_cell_write_request(objective)
+        generated_content_request = (
+            None
+            if cell_write_request is not None
+            else self._extract_generated_content_write_request(objective)
+        )
         if cell_write_request is not None:
             steps = (
                 self._build_cell_write_steps(cell_write_request)
                 if self._plan_style == "concrete"
                 else self._build_abstract_cell_write_steps(cell_write_request)
             )
+        elif generated_content_request is not None:
+            if self._plan_style == "abstract":
+                steps = self._build_abstract_generated_content_steps(generated_content_request)
+            else:
+                steps = self._build_cell_write_steps(
+                    CellWriteRequest(
+                        file=generated_content_request.file,
+                        output=generated_content_request.output,
+                        sheet=generated_content_request.sheet,
+                        cell=generated_content_request.cell,
+                        value=generated_content_request.topic,
+                        create_file=generated_content_request.create_file,
+                    )
+                )
         else:
             source_file = self._extract_excel_file(objective) or "input.xlsx"
             source_sheet = self._extract_sheet(objective) or self._defaults.source_sheet
@@ -344,6 +373,79 @@ class LlmPlanner(IPlanner):
             ),
         ]
 
+    def _build_abstract_generated_content_steps(
+        self, request: GeneratedContentWriteRequest
+    ) -> list[Step]:
+        language = self._detect_text_language(request.topic)
+        return [
+            Step(
+                step_id="prepare_workbook",
+                name="Prepare workbook",
+                description=(
+                    "Prepare the target workbook and worksheet so the requested content can "
+                    "be applied safely."
+                ),
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "output": request.output,
+                    "create_file": request.create_file,
+                },
+                risk_level=RiskLevel.LOW,
+                backup_scope=BackupScope.WORKSPACE if request.create_file else BackupScope.FILE,
+            ),
+            Step(
+                step_id="generate_requested_content",
+                name="Generate requested content",
+                description=(
+                    "Generate the text content requested by the workflow so it can be written "
+                    "into the workbook."
+                ),
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "topic": request.topic,
+                    "language": language,
+                    "format": "short text suitable for a worksheet cell",
+                    "target_cell": request.cell,
+                },
+                depends_on=["prepare_workbook"],
+                risk_level=RiskLevel.LOW,
+                backup_scope=BackupScope.NONE,
+            ),
+            Step(
+                step_id="apply_requested_update",
+                name="Apply requested update",
+                description="Apply the requested workbook update at the target location.",
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "cell": request.cell,
+                    "content_source_step": "generate_requested_content",
+                    "output": request.output,
+                },
+                depends_on=["generate_requested_content"],
+                risk_level=RiskLevel.MEDIUM,
+                backup_scope=BackupScope.FILE,
+            ),
+            Step(
+                step_id="finalize_workbook",
+                name="Finalize workbook",
+                description="Save the workbook to the requested output location.",
+                tool_ref="orchestra.llm_execute",
+                resolved_input={
+                    "file": request.file,
+                    "sheet": request.sheet,
+                    "output": request.output,
+                },
+                depends_on=["apply_requested_update"],
+                risk_level=RiskLevel.HIGH,
+                requires_approval=True,
+                backup_scope=BackupScope.FILE,
+            ),
+        ]
+
     def _extract_cell_write_request(self, text: str) -> CellWriteRequest | None:
         source_file = self._extract_excel_file(text)
         cell_ref = self._extract_cell_reference(text)
@@ -358,6 +460,27 @@ class LlmPlanner(IPlanner):
             sheet=sheet,
             cell=cell_ref,
             value=cell_value,
+            create_file=self._is_create_workbook_request(text),
+        )
+
+    def _extract_generated_content_write_request(
+        self, text: str
+    ) -> GeneratedContentWriteRequest | None:
+        source_file = self._extract_excel_file(text)
+        if source_file is None or not self._is_write_request(text):
+            return None
+        sheet = self._extract_sheet(text) or self._defaults.source_sheet
+        topic = self._extract_sheet_write_topic(text, sheet)
+        if topic is None:
+            return None
+        output = self._extract_output_file(text, source_file, default_output=source_file)
+        cell = self._extract_cell_reference(text) or "A1"
+        return GeneratedContentWriteRequest(
+            file=source_file,
+            output=output,
+            sheet=sheet,
+            cell=cell,
+            topic=topic,
             create_file=self._is_create_workbook_request(text),
         )
 
@@ -465,6 +588,40 @@ class LlmPlanner(IPlanner):
     def _clean_cell_value(value: str) -> str:
         cleaned = value.strip().strip(".,。")
         return cleaned.strip("\"'`“”「」『』")
+
+    @staticmethod
+    def _extract_sheet_write_topic(text: str, sheet: str) -> str | None:
+        escaped_sheet = re.escape(sheet)
+        patterns = (
+            re.compile(
+                rf"{escaped_sheet}\s*(?:の\s*[A-Za-z]{{1,3}}[1-9][0-9]*\s*に|に)\s*"
+                rf"(?P<topic>.+?)\s*(?:と)?(?:書き込|入力|記入|入れ|セット)",
+                re.I,
+            ),
+            re.compile(
+                rf"(?:write|put|set)\s+[\"'`“”]?(?P<topic>.+?)[\"'`“”]?\s+"
+                rf"(?:to|into|in)\s+{escaped_sheet}\b",
+                re.I,
+            ),
+        )
+        for pattern in patterns:
+            match = pattern.search(text)
+            if match is None:
+                continue
+            topic = match.group("topic").strip()
+            if topic:
+                return LlmPlanner._clean_cell_value(topic)
+        return None
+
+    @staticmethod
+    def _is_write_request(text: str) -> bool:
+        return bool(re.search(r"\b(write|put|set)\b|書き込|入力|記入|入れ|セット", text, re.I))
+
+    @staticmethod
+    def _detect_text_language(text: str) -> str:
+        if re.search(r"[\u3040-\u30ff\u4e00-\u9fff]", text):
+            return "ja"
+        return "en"
 
     @staticmethod
     def _is_create_workbook_request(text: str) -> bool:

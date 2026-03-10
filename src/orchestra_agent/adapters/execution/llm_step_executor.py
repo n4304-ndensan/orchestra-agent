@@ -16,7 +16,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.mcp_client import IMcpClient
 from orchestra_agent.ports.step_executor import IStepExecutor
-from orchestra_agent.shared.error_handling import text_preview
+from orchestra_agent.shared.llm_json import extract_json_payload
 from orchestra_agent.shared.llm_step_runtime_protocol import (
     STEP_RUNTIME_PROTOCOL_VERSION,
     CallMcpToolAction,
@@ -45,6 +45,28 @@ class LlmStepExecutor(IStepExecutor):
         ".venv-uv",
         ".uv-cache",
         "__pycache__",
+    }
+    _path_value_keys = {
+        "destination",
+        "destination_path",
+        "file",
+        "file_path",
+        "final_output",
+        "output",
+        "output_file",
+        "path",
+        "save_as",
+        "source",
+        "source_file",
+        "target",
+        "target_file",
+        "workbook",
+        "workbook_path",
+    }
+    _path_list_keys = {
+        "attached_files",
+        "paths",
+        "requested_attachment_paths",
     }
 
     def __init__(
@@ -154,14 +176,16 @@ class LlmStepExecutor(IStepExecutor):
                     LlmMessage(
                         role="user",
                         content=self._json_text(
-                            {
-                                "attachment_request_result": {
-                                    "attached_paths": requested,
-                                    "all_attached_files": [
-                                        attachment.path for attachment in attached_files
-                                    ],
+                            self._sanitize_for_llm(
+                                {
+                                    "attachment_request_result": {
+                                        "attached_paths": requested,
+                                        "all_attached_files": [
+                                            attachment.path for attachment in attached_files
+                                        ],
+                                    }
                                 }
-                            }
+                            )
                         ),
                         attachments=tuple(attached_files[prior_attachment_count:]),
                     )
@@ -190,13 +214,15 @@ class LlmStepExecutor(IStepExecutor):
                     LlmMessage(
                         role="user",
                         content=self._json_text(
-                            {
-                                "tool_result": {
-                                    "tool_ref": tool_ref,
-                                    "input": normalized_input,
-                                    "result": result,
+                            self._sanitize_for_llm(
+                                {
+                                    "tool_result": {
+                                        "tool_ref": tool_ref,
+                                        "input": normalized_input,
+                                        "result": result,
+                                    }
                                 }
-                            }
+                            )
                         ),
                     )
                 )
@@ -213,11 +239,13 @@ class LlmStepExecutor(IStepExecutor):
                     LlmMessage(
                         role="user",
                         content=self._json_text(
-                            {
-                                "write_file_result": {
-                                    "path": written_path,
+                            self._sanitize_for_llm(
+                                {
+                                    "write_file_result": {
+                                        "path": written_path,
+                                    }
                                 }
-                            }
+                            )
                         ),
                     )
                 )
@@ -250,9 +278,9 @@ class LlmStepExecutor(IStepExecutor):
                 "description": step.description,
                 "step_runtime": step.tool_ref,
                 "instruction": self._step_instruction(step, resolved_input),
-                "resolved_input": resolved_input,
+                "resolved_input": self._sanitize_for_llm(resolved_input),
             },
-            "step_results": step_results,
+            "step_results": self._sanitize_for_llm(step_results),
             "step_runtime_protocol": {
                 "version": STEP_RUNTIME_PROTOCOL_VERSION,
                 "actions": [
@@ -266,9 +294,12 @@ class LlmStepExecutor(IStepExecutor):
                 ),
             },
             "available_mcp_tools": available_tools,
-            "workspace_root": str(self._workspace_root),
+            "workspace_root": self._workspace_root.as_posix(),
             "workspace_file_index": indexed_files,
-            "attached_files": [attachment.path for attachment in attached_files],
+            "attached_files": self._sanitize_for_llm(
+                [attachment.path for attachment in attached_files],
+                key="attached_files",
+            ),
             "requested_attachment_paths": requested_paths,
         }
 
@@ -303,18 +334,7 @@ class LlmStepExecutor(IStepExecutor):
 
     @staticmethod
     def _extract_json(raw_text: str) -> Any:
-        stripped = raw_text.strip()
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError:
-            pass
-
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            preview = text_preview(stripped)
-            raise ValueError(f"LLM step executor output is not valid JSON. preview={preview}")
-        return json.loads(stripped[start : end + 1])
+        return extract_json_payload(raw_text, label="LLM step executor output")
 
     def _apply_actions(
         self,
@@ -449,6 +469,36 @@ class LlmStepExecutor(IStepExecutor):
         if isinstance(instruction, str) and instruction.strip():
             return instruction
         return step.description
+
+    def _sanitize_for_llm(self, value: Any, *, key: str | None = None) -> Any:
+        if isinstance(value, dict):
+            return {
+                item_key: self._sanitize_for_llm(item_value, key=item_key)
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, list):
+            return [self._sanitize_for_llm(item, key=key) for item in value]
+        if isinstance(value, str):
+            return self._sanitize_string_for_llm(value, key=key)
+        return value
+
+    def _sanitize_string_for_llm(self, value: str, *, key: str | None = None) -> str:
+        if key in self._path_list_keys:
+            return self._display_path_for_llm(value)
+        if key in self._path_value_keys:
+            return self._display_path_for_llm(value)
+        return value
+
+    def _display_path_for_llm(self, raw_path: str) -> str:
+        candidate = Path(raw_path)
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+            if resolved.is_relative_to(self._workspace_root):
+                return resolved.relative_to(self._workspace_root).as_posix()
+            return resolved.as_posix()
+        if "\\" in raw_path:
+            return raw_path.replace("\\", "/")
+        return raw_path
 
     @staticmethod
     def _json_text(payload: Any) -> str:
