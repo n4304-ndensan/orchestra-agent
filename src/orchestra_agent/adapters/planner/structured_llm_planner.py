@@ -18,6 +18,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.planner import IPlanner
 from orchestra_agent.shared.error_handling import text_preview
+from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
 
 
 class StructuredLlmPlanner(IPlanner):
@@ -25,13 +26,11 @@ class StructuredLlmPlanner(IPlanner):
     Builds a full StepPlan from a structured LLM response.
     """
 
-    _builtin_tool_refs = {"orchestra.ai_review", "orchestra.llm_execute"}
-
     def __init__(
         self,
         llm_client: ILlmClient,
         available_tools_supplier: Callable[[], list[str]],
-        available_tool_catalog_supplier: Callable[[], list[dict[str, str]]] | None = None,
+        available_tool_catalog_supplier: Callable[[], list[dict[str, Any]]] | None = None,
         fallback_planner: IPlanner | None = None,
         temperature: float = 0.0,
         max_tokens: int = 2400,
@@ -47,8 +46,7 @@ class StructuredLlmPlanner(IPlanner):
     def compile_step_plan(self, workflow: Workflow) -> StepPlan:
         self.last_warning = None
         try:
-            available_tool_catalog = self._available_tool_catalog()
-            allowed_tools = {tool["name"] for tool in available_tool_catalog}
+            available_mcp_tools = self._available_mcp_tool_catalog()
             request = LlmGenerateRequest(
                 messages=(
                     LlmMessage(role="system", content=self._system_prompt()),
@@ -57,7 +55,8 @@ class StructuredLlmPlanner(IPlanner):
                         content=json.dumps(
                             {
                                 "workflow": workflow_to_dict(workflow),
-                                "available_tools": available_tool_catalog,
+                                "step_runtimes": self._step_runtime_catalog(),
+                                "available_mcp_tools": available_mcp_tools,
                             },
                             ensure_ascii=False,
                             indent=2,
@@ -71,42 +70,39 @@ class StructuredLlmPlanner(IPlanner):
             )
             raw = self._llm_client.generate(request)
             parsed = self._extract_json(raw)
-            return self._build_step_plan(workflow, parsed, allowed_tools)
+            return self._build_step_plan(workflow, parsed)
         except Exception as exc:  # noqa: BLE001
             if self._fallback_planner is None:
                 raise
             self.last_warning = f"Structured LLM plan rejected; fallback applied: {exc}"
             return self._fallback_planner.compile_step_plan(workflow)
 
-    def _allowed_tools(self) -> set[str]:
-        tools = set(self._builtin_tool_refs)
-        tools.update(self._available_tools_supplier())
-        return tools
-
-    def _available_tool_catalog(self) -> list[dict[str, str]]:
-        if self._available_tool_catalog_supplier is not None:
-            catalog = [
-                {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                }
-                for tool in self._available_tool_catalog_supplier()
-                if isinstance(tool, dict) and isinstance(tool.get("name"), str)
-            ]
-            if catalog:
-                builtin_tools = [
-                    {
-                        "name": tool_name,
-                        "description": "AI-orchestrated step runtime for multi-tool execution.",
-                    }
-                    for tool_name in sorted(self._builtin_tool_refs)
-                ]
-                return sorted(builtin_tools + catalog, key=lambda item: item["name"])
-
+    @classmethod
+    def _step_runtime_catalog(cls) -> list[dict[str, Any]]:
         return [
-            {"name": tool_name, "description": ""}
-            for tool_name in sorted(self._allowed_tools())
+            {
+                "name": "orchestra.ai_review",
+                "description": "AI review/runtime step that focuses on analysis and judgment.",
+            },
+            {
+                "name": "orchestra.llm_execute",
+                "description": (
+                    "AI execution runtime that selects MCP tools during execution and "
+                    "returns a summarized finish result when the step is complete."
+                ),
+            },
         ]
+
+    def _available_mcp_tool_catalog(self) -> list[dict[str, Any]]:
+        if self._available_tool_catalog_supplier is not None:
+            catalog = normalize_mcp_tool_catalog(self._available_tool_catalog_supplier())
+            if catalog:
+                return sorted(catalog, key=lambda item: item["name"])
+
+        return sorted(
+            normalize_mcp_tool_catalog(self._available_tools_supplier()),
+            key=lambda item: item["name"],
+        )
 
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
@@ -122,24 +118,29 @@ class StructuredLlmPlanner(IPlanner):
             "Rules:\n"
             "1) Create the full plan, not a patch.\n"
             "2) step_id must be unique and dependency-safe.\n"
-            "3) tool_ref must be one of the provided available_tools[].name values.\n"
-            "4) Use orchestra.llm_execute when the step needs local workspace edits or "
-            "multi-tool orchestration.\n"
-            "5) Use orchestra.ai_review when the step is primarily judgment, review, or "
-            "analysis over files and messages.\n"
-            "6) Do not model first-class if/for syntax in the plan. Put branching, iteration, and "
+            "3) tool_ref must be orchestra.llm_execute for normal execution steps or "
+            "orchestra.ai_review for judgment/review-only steps.\n"
+            "4) Do not put concrete MCP tool names in step names, descriptions, or instructions. "
+            "Describe each step in abstract task language only.\n"
+            "5) Put business intent, target files, expected outputs, and success conditions in "
+            "description and resolved_input. Do not describe tool choreography.\n"
+            "6) One step may require multiple MCP tool calls at runtime. The runtime will decide "
+            "those later and return a summarized finish.result that later steps can use.\n"
+            "7) Split steps around meaningful handoffs so later steps can consume the summarized "
+            "result of earlier steps.\n"
+            "8) available_mcp_tools may span multiple servers. Use their names, descriptions, "
+            "and server metadata only as runtime hints; do not hardcode server-specific flow into "
+            "the step plan.\n"
+            "9) Do not model first-class if/for syntax in the plan. Put branching, iteration, and "
             "search loops inside orchestra.llm_execute or orchestra.ai_review.\n"
-            "7) When workflow.replan_context is present, treat source_workflow_document as the "
+            "10) When workflow.replan_context is present, treat source_workflow_document as the "
             "replan source document and change_summary as the required correction.\n"
-            "8) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
+            "11) Use backup_scope=WORKSPACE before mutating local files unless a smaller FILE "
             "backup is sufficient.\n"
-            "9) Respect feedback_history as the latest correction source.\n"
-            "10) Set requires_approval=true on the first executable step when the plan "
+            "12) Respect feedback_history as the latest correction source.\n"
+            "13) Set requires_approval=true on the first executable step when the plan "
             "contains any risky or user-visible mutation checkpoint.\n"
-            "11) For bundled Excel tools, use exact argument names such as file, sheet, "
-            "output, column, cells, image_index, overwrite, start_row, and end_row. "
-            "Do not invent aliases like path or sheet_name.\n"
-            "12) Keep output valid JSON and do not add commentary."
+            "14) Keep output valid JSON and do not add commentary."
         )
 
     @staticmethod
@@ -164,7 +165,6 @@ class StructuredLlmPlanner(IPlanner):
     def _build_step_plan(
         workflow: Workflow,
         parsed: Any,
-        allowed_tools: set[str],
     ) -> StepPlan:
         if not isinstance(parsed, dict):
             raise ValueError("Structured LLM planner output must be an object.")
@@ -173,7 +173,7 @@ class StructuredLlmPlanner(IPlanner):
         if not isinstance(raw_steps, list) or not raw_steps:
             raise ValueError("Structured LLM planner output must contain a non-empty 'steps' list.")
 
-        steps = [StructuredLlmPlanner._build_step(item, allowed_tools) for item in raw_steps]
+        steps = [StructuredLlmPlanner._build_step(item) for item in raw_steps]
         return StepPlan(
             step_plan_id=f"sp-{uuid4().hex[:10]}",
             workflow_id=workflow.workflow_id,
@@ -182,19 +182,15 @@ class StructuredLlmPlanner(IPlanner):
         )
 
     @staticmethod
-    def _build_step(raw_step: Any, allowed_tools: set[str]) -> Step:
+    def _build_step(raw_step: Any) -> Step:
         if not isinstance(raw_step, dict):
             raise ValueError("Each LLM-generated step must be an object.")
-
-        tool_ref = StructuredLlmPlanner._required_str(raw_step, "tool_ref")
-        if tool_ref not in allowed_tools:
-            raise ValueError(f"tool_ref '{tool_ref}' is not in the allowed tool set.")
 
         return Step(
             step_id=StructuredLlmPlanner._required_str(raw_step, "step_id"),
             name=StructuredLlmPlanner._required_str(raw_step, "name"),
             description=StructuredLlmPlanner._required_str(raw_step, "description"),
-            tool_ref=tool_ref,
+            tool_ref=StructuredLlmPlanner._normalize_tool_ref(raw_step.get("tool_ref")),
             resolved_input=StructuredLlmPlanner._as_dict(raw_step.get("resolved_input", {})),
             depends_on=StructuredLlmPlanner._as_str_list(raw_step.get("depends_on", [])),
             risk_level=RiskLevel(StructuredLlmPlanner._optional_str(raw_step, "risk_level", "LOW")),
@@ -207,6 +203,12 @@ class StructuredLlmPlanner(IPlanner):
                 StructuredLlmPlanner._optional_str(raw_step, "backup_scope", "NONE")
             ),
         )
+
+    @staticmethod
+    def _normalize_tool_ref(raw_tool_ref: Any) -> str:
+        if isinstance(raw_tool_ref, str) and raw_tool_ref.strip() == "orchestra.ai_review":
+            return "orchestra.ai_review"
+        return "orchestra.llm_execute"
 
     @staticmethod
     def _required_str(raw_step: dict[str, Any], key: str) -> str:

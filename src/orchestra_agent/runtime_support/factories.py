@@ -214,8 +214,8 @@ class DefaultPlannerFactory(IPlannerFactory):
         proposal_provider: IStepProposalProvider | None,
         llm_client: ILlmClient | None,
     ) -> IPlanner:
-        base_planner = LlmPlanner()
         planner_mode = resolve_planner_mode(config)
+        base_planner = LlmPlanner(plan_style="abstract" if planner_mode == "full" else "concrete")
         if planner_mode == "full" and llm_client is not None:
             return StructuredLlmPlanner(
                 llm_client=llm_client,

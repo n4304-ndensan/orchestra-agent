@@ -48,7 +48,7 @@ class FilesystemSnapshotManager(ISnapshotManager):
                 raise ValueError(
                     "FILE snapshot requires metadata containing 'file' or 'file_path'."
                 )
-            source = self._resolve_workspace_path(source_file)
+            source = self._resolve_workspace_file(source_file)
             if not source.is_file():
                 raise FileNotFoundError(f"Snapshot source file not found: {source}.")
             copied_file = snapshot_dir / source.name
@@ -97,13 +97,13 @@ class FilesystemSnapshotManager(ISnapshotManager):
             return file_name
         return None
 
-    def _resolve_workspace_path(self, raw_path: str) -> Path:
-        path = Path(raw_path)
-        if path.is_absolute():
-            return path
-        if path.is_file():
-            return path
-        return self._workspace_root / path
+    def _resolve_workspace_file(self, raw_path: str) -> Path:
+        candidate = Path(raw_path)
+        if candidate.is_absolute():
+            return candidate
+        if candidate.exists():
+            return candidate.resolve()
+        return (self._workspace_root / candidate).resolve()
 
     def _copy_tree(self, source: Path, destination: Path) -> None:
         relative_snapshot_root = self._relative_snapshot_root(source)

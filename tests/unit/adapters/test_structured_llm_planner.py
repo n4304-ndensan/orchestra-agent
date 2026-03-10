@@ -41,11 +41,10 @@ def test_structured_llm_planner_builds_full_step_plan() -> None:
                 {
                   "step_id": "prepare_report",
                   "name": "Prepare report",
-                  "description": "Use MCP and write a local report",
+                  "description": "Inspect the workbook and prepare the requested report output.",
                   "tool_ref": "orchestra.llm_execute",
                   "resolved_input": {
-                    "allowed_mcp_tools": ["excel.read_sheet"],
-                    "instruction": "Read sheet and write report.txt"
+                    "instruction": "Prepare the requested report from the workbook."
                   },
                   "depends_on": [],
                   "risk_level": "MEDIUM",
@@ -57,7 +56,7 @@ def test_structured_llm_planner_builds_full_step_plan() -> None:
                 {
                   "step_id": "export_file",
                   "name": "Export workbook",
-                  "description": "Save workbook",
+                  "description": "Finalize workbook output from the previous step summary.",
                   "tool_ref": "excel.save_file",
                   "resolved_input": {
                     "file": "sales.xlsx",
@@ -95,9 +94,12 @@ def test_structured_llm_planner_builds_full_step_plan() -> None:
 
         assert [step.step_id for step in plan.steps] == ["prepare_report", "export_file"]
         assert plan.steps[0].tool_ref == "orchestra.llm_execute"
+        assert plan.steps[1].tool_ref == "orchestra.llm_execute"
         assert plan.steps[0].backup_scope.value == "WORKSPACE"
         assert plan.steps[1].depends_on == ["prepare_report"]
         assert client.requests[0].messages[1].attachments[0].path == str(reference_file)
+        assert '"available_mcp_tools"' in client.requests[0].messages[1].content
+        assert '"step_runtimes"' in client.requests[0].messages[1].content
         assert '"description": "Read worksheet rows."' in client.requests[0].messages[1].content
     finally:
         shutil.rmtree(base, ignore_errors=True)

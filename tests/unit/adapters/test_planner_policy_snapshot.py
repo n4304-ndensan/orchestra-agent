@@ -131,19 +131,18 @@ def test_filesystem_snapshot_manager_restores_file() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_filesystem_snapshot_manager_supports_workspace_relative_file_paths() -> None:
+def test_filesystem_snapshot_manager_resolves_relative_file_inside_workspace() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
     try:
         snapshots_dir = base / "snapshots"
         manager = FilesystemSnapshotManager(base_snapshot_dir=snapshots_dir, workspace_root=base)
-        target_file = base / "nested" / "sales.xlsx"
-        target_file.parent.mkdir(parents=True, exist_ok=True)
+        target_file = base / "sales.xlsx"
         target_file.write_text("original", encoding="utf-8")
 
         snapshot_ref = manager.create_snapshot(
             scope=BackupScope.FILE,
-            metadata={"file": "nested/sales.xlsx"},
+            metadata={"file": "sales.xlsx"},
         )
         target_file.write_text("changed", encoding="utf-8")
         manager.restore_snapshot(snapshot_ref)

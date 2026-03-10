@@ -66,21 +66,29 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
             [
                 """
                 {
-                  "actions": [
-                    {
-                      "type": "write_file",
-                      "path": "reports/summary.txt",
-                      "content": "done"
-                    },
-                    {
-                      "type": "call_mcp_tool",
-                      "tool_ref": "excel.read_sheet",
-                      "input": {"file": "sales.xlsx", "sheet": "Sheet1"}
-                    }
-                  ],
-                  "result": {"status": "ok"}
+                  "type": "write_file",
+                  "path": "reports/summary.txt",
+                  "content": "done"
                 }
+                """,
                 """
+                {
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.read_sheet",
+                  "input": {"file": "sales.xlsx", "sheet": "Sheet1"}
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Wrote the report file and inspected the worksheet.",
+                    "written_files": ["reports/summary.txt"],
+                    "source_sheet": "Sheet1"
+                  }
+                }
+                """,
             ]
         )
         audit_logger = InMemoryAuditLogger()
@@ -112,11 +120,19 @@ def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
                 mcp_client=mcp_client,
             )
 
-        assert result == {"status": "ok"}
+        assert result == {
+            "status": "ok",
+            "summary": "Wrote the report file and inspected the worksheet.",
+            "written_files": ["reports/summary.txt"],
+            "source_sheet": "Sheet1",
+        }
         assert (base / "reports" / "summary.txt").read_text(encoding="utf-8") == "done"
         assert mcp_client.calls == [
             ("excel.read_sheet", {"file": "sales.xlsx", "sheet": "Sheet1"})
         ]
+        assert len(client.requests) == 3
+        assert '"write_file_result"' in client.requests[1].messages[-1].content
+        assert '"tool_result"' in client.requests[2].messages[-1].content
         assert client.requests[0].messages[1].attachments[0].path == str(reference_file.resolve())
         assert '"description": "Read worksheet rows as dictionaries keyed by column letters."' in (
             client.requests[0].messages[1].content
@@ -144,19 +160,18 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
             [
                 """
                 {
-                  "actions": [
-                    {
-                      "type": "request_file_attachments",
-                      "paths": ["specs/requirements.txt"],
-                      "reason": "Need the requirements document"
-                    }
-                  ]
+                  "type": "request_file_attachments",
+                  "paths": ["specs/requirements.txt"],
+                  "reason": "Need the requirements document"
                 }
                 """,
                 """
                 {
-                  "actions": [],
-                  "result": {"status": "used-attachment"}
+                  "type": "finish",
+                  "result": {
+                    "status": "used-attachment",
+                    "summary": "Reviewed the attached requirements file."
+                  }
                 }
                 """,
             ]
@@ -186,10 +201,13 @@ def test_llm_step_executor_can_attach_workspace_files_on_demand() -> None:
                 mcp_client=FakeMcpClient(),
             )
 
-        assert result == {"status": "used-attachment"}
+        assert result == {
+            "status": "used-attachment",
+            "summary": "Reviewed the attached requirements file.",
+        }
         assert len(client.requests) == 2
         assert client.requests[0].messages[1].attachments == ()
-        assert client.requests[1].messages[1].attachments[0].path == str(requested_file.resolve())
+        assert client.requests[1].messages[-1].attachments[0].path == str(requested_file.resolve())
         attachment_event = [
             event
             for event in audit_logger.events
@@ -209,13 +227,9 @@ def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
             [
                 """
                 {
-                  "actions": [
-                    {
-                      "type": "write_file",
-                      "path": "../outside.txt",
-                      "content": "nope"
-                    }
-                  ]
+                  "type": "write_file",
+                  "path": "../outside.txt",
+                  "content": "nope"
                 }
                 """
             ]
@@ -257,15 +271,11 @@ def test_llm_step_executor_supports_ai_review_steps() -> None:
             [
                 """
                 {
-                  "actions": [
-                    {
-                      "type": "set_result",
-                      "result": {
-                        "status": "reviewed",
-                        "summary": "No critical issues"
-                      }
-                    }
-                  ]
+                  "type": "finish",
+                  "result": {
+                    "status": "reviewed",
+                    "summary": "No critical issues"
+                  }
                 }
                 """
             ]
@@ -300,6 +310,62 @@ def test_llm_step_executor_supports_ai_review_steps() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_includes_previous_step_results_in_next_step_prompt() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Used the prior step summary."
+                  }
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-next-step",
+            name="Next step input",
+            version=1,
+            objective="Use previous step results",
+        )
+        step = Step(
+            step_id="finalize_report",
+            name="Finalize report",
+            description="Finalize the output using the previous step summary.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={},
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={
+                "prepare_report": {
+                    "summary": "Workbook inspected and report drafted.",
+                    "output_file": "reports/summary.txt",
+                }
+            },
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Used the prior step summary.",
+        }
+        request_body = client.requests[0].messages[1].content
+        assert '"prepare_report"' in request_body
+        assert '"output_file": "reports/summary.txt"' in request_body
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -308,29 +374,39 @@ def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> No
             [
                 """
                 {
-                  "actions": [
-                    {
-                      "type": "call_mcp_tool",
-                      "tool_ref": "excel.create_file",
-                      "input": {"path": "output/HelloWorld.xlsx"}
-                    },
-                    {
-                      "type": "call_mcp_tool",
-                      "tool_ref": "excel.write_cells",
-                      "input": {
-                        "path": "output/HelloWorld.xlsx",
-                        "sheet_name": "Sheet1",
-                        "cells": {"A1": "HelloWorld"}
-                      }
-                    },
-                    {
-                      "type": "call_mcp_tool",
-                      "tool_ref": "excel.save_file",
-                      "input": {"path": "output/HelloWorld.xlsx"}
-                    }
-                  ]
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.create_file",
+                  "input": {"path": "output/HelloWorld.xlsx"}
                 }
+                """,
                 """
+                {
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.write_cells",
+                  "input": {
+                    "path": "output/HelloWorld.xlsx",
+                    "sheet_name": "Sheet1",
+                    "cells": {"A1": "HelloWorld"}
+                  }
+                }
+                """,
+                """
+                {
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.save_file",
+                  "input": {"path": "output/HelloWorld.xlsx"}
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "completed",
+                    "summary": "Created, updated, and saved the workbook.",
+                    "output_file": "output/HelloWorld.xlsx"
+                  }
+                }
+                """,
             ]
         )
         executor = LlmStepExecutor(client, workspace_root=base)
@@ -382,12 +458,11 @@ def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> No
             ),
         ]
         assert result == {
-            "tool_ref": "excel.save_file",
-            "input": {
-                "file": "output/HelloWorld.xlsx",
-                "output": "output/HelloWorld.xlsx",
-            },
+            "status": "completed",
+            "summary": "Created, updated, and saved the workbook.",
+            "output_file": "output/HelloWorld.xlsx",
         }
+        assert len(client.requests) == 4
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

@@ -27,6 +27,7 @@
   - 各 step の解釈
   - 実行中に必要な MCP tool 選択
   - 実行中に必要なファイル添付の要求
+  - 各 step の最終結果を `finish.result` として要約し、次 step に渡す
   - `orchestra.ai_review` によるレビュー、比較、妥当性判断
 - MCP がやること:
   - 実ファイル操作
@@ -77,6 +78,7 @@ flowchart TD
 - runtime 側の multi-endpoint MCP 集約
   - 複数 endpoint の `tools/list` を統合
   - tool description も AI に渡す
+  - tool catalog に `server` などのメタデータを付けて LLM に渡せる
   - tool 名に応じて正しい MCP server へ routing
 - workflow / step plan / run state / audit 永続化
   - `workflow/`
@@ -95,6 +97,10 @@ flowchart TD
 - LLM attachment support
   - message に複数ファイル添付可能
   - `orchestra.llm_execute` 中に LLM が追加ファイルを要求可能
+- step runtime protocol
+  - 1 turn につき 1 action の runtime contract
+  - `finish.result` を step 間 handoff の正規 output として利用
+  - action parser は extension field を保持できるので将来拡張しやすい
 
 ## 5. planner の現状
 
@@ -108,8 +114,9 @@ flowchart TD
   - 決定論 planner を使う
   - 現状この draft planner は Excel 寄り
 - `llm.provider = openai | google` かつ `planner_mode = full`
-  - LLM が available MCP tools を見て full plan を構築
-  - step 実行時も LLM が tool catalog を見て MCP runtime をオーケストレーション
+  - LLM が available MCP tools を見て抽象 step plan を構築
+  - step 実行時は LLM が tool catalog を見て MCP runtime をオーケストレーション
+  - planner は具体 tool 名ではなく抽象 step を優先し、具体 tool 選択は runtime に遅延
   - Excel 以外の role を増やしたときも、このモードが汎用 orchestration の中心になる
   - judgement-heavy な step には `orchestra.ai_review` を使える
   - failure / feedback による再計画時も `replan_context` を受けて AI が再設計する
@@ -145,6 +152,8 @@ flowchart TD
 
 新しい MCP server を足すときは、`orchestra-agent.toml` に `[[mcp.servers]]` を追加するだけで runtime に束ねられます。
 
+ただし tool 名は全 endpoint で一意である必要があります。重複がある場合は runtime が duplicate registration として reject します。
+
 ## 7. 品質状態
 
 - `ruff`: pass
@@ -156,3 +165,4 @@ flowchart TD
 - `Workflow` / `StepPlan` の文書化は domain serialization helper に集約
 - planner / replan / repository / API 間の重複 JSON / XML 組み立てを削減
 - `requires_approval` と runtime approval の挙動を一致させ、拡張時に意味がぶれないように整理
+- step runtime action を dataclass protocol に寄せ、`finish` など必須 contract を固定しつつ extension field を追加できる形に整理
