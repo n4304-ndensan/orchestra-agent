@@ -4,10 +4,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: orchestra-mcp-files
-    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml", "--server", "files"]
+    command:
+      [
+        "orchestra-agent-mcp",
+        "--config",
+        "/workspace/project/orchestra-agent.toml",
+        "--workspace",
+        "/workspace/workspace",
+        "--server",
+        "files",
+      ]
     working_dir: /workspace/project
     volumes:
       - ./:/workspace/project
+      - ./workspace:/workspace/workspace
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -32,10 +42,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: orchestra-mcp-excel
-    command: ["orchestra-agent-mcp", "--config", "/workspace/project/orchestra-agent.toml", "--server", "excel"]
+    command:
+      [
+        "orchestra-agent-mcp",
+        "--config",
+        "/workspace/project/orchestra-agent.toml",
+        "--workspace",
+        "/workspace/workspace",
+        "--server",
+        "excel",
+      ]
     working_dir: /workspace/project
     volumes:
       - ./:/workspace/project
+      - ./workspace:/workspace/workspace
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -60,10 +80,18 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: orchestra-api
-    command: ["orchestra-agent-api", "--config", "/workspace/project/orchestra-agent.toml"]
+    command:
+      [
+        "orchestra-agent-api",
+        "--config",
+        "/workspace/project/orchestra-agent.toml",
+        "--workspace",
+        "/workspace/workspace",
+      ]
     working_dir: /workspace/project
     volumes:
       - ./:/workspace/project
+      - ./workspace:/workspace/workspace
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -94,10 +122,18 @@ services:
       dockerfile: Dockerfile
     container_name: orchestra-cli
     profiles: ["cli"]
-    entrypoint: ["orchestra-agent", "--config", "/workspace/project/orchestra-agent.toml"]
+    entrypoint:
+      [
+        "orchestra-agent",
+        "--config",
+        "/workspace/project/orchestra-agent.toml",
+        "--workspace",
+        "/workspace/workspace",
+      ]
     working_dir: /workspace/project
     volumes:
       - ./:/workspace/project
+      - ./workspace:/workspace/workspace
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
