@@ -1,29 +1,27 @@
+x-mcp-server-env: &mcp-server-env
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
+  ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
+
+x-mcp-runtime: &mcp-runtime
+  working_dir: /workspace/project
+  volumes:
+    - ./:/workspace/project
+    - ./workspace:/workspace/workspace
+  restart: unless-stopped
+
 services:
   orchestra-mcp-files:
+    <<: *mcp-runtime
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/mcp-files-server/Dockerfile
     container_name: orchestra-mcp-files
-    command:
-      [
-        "orchestra-agent-mcp",
-        "--config",
-        "/workspace/project/orchestra-agent.toml",
-        "--workspace",
-        "/workspace/workspace",
-        "--server",
-        "files",
-      ]
-    working_dir: /workspace/project
-    volumes:
-      - ./:/workspace/project
-      - ./workspace:/workspace/workspace
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      <<: *mcp-server-env
     ports:
       - "8010:8010"
-    restart: unless-stopped
     healthcheck:
       test:
         [
@@ -38,30 +36,15 @@ services:
       start_period: 10s
 
   orchestra-mcp-excel:
+    <<: *mcp-runtime
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/mcp-excel-server/Dockerfile
     container_name: orchestra-mcp-excel
-    command:
-      [
-        "orchestra-agent-mcp",
-        "--config",
-        "/workspace/project/orchestra-agent.toml",
-        "--workspace",
-        "/workspace/workspace",
-        "--server",
-        "excel",
-      ]
-    working_dir: /workspace/project
-    volumes:
-      - ./:/workspace/project
-      - ./workspace:/workspace/workspace
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      <<: *mcp-server-env
     ports:
       - "8020:8020"
-    restart: unless-stopped
     healthcheck:
       test:
         [

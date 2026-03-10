@@ -1,0 +1,30 @@
+services:
+  orchestra-mcp-excel:
+    build:
+      context: ../..
+      dockerfile: docker/mcp-excel-server/Dockerfile
+    container_name: orchestra-mcp-excel
+    working_dir: /workspace/project
+    volumes:
+      - ../../:/workspace/project
+      - ../../workspace:/workspace/workspace
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
+      ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
+    ports:
+      - "8020:8020"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8020/health'))['status'])",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
