@@ -54,6 +54,16 @@ class FailingToolDiscoveryMcpClient(FakeMcpClient):
         raise RuntimeError("MCP endpoint request failed for tools/list: http://127.0.0.1:8010/mcp")
 
 
+class CountingToolDiscoveryMcpClient(FakeMcpClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.describe_calls = 0
+
+    def describe_tools(self) -> list[dict[str, str]]:
+        self.describe_calls += 1
+        return super().describe_tools()
+
+
 def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -959,5 +969,253 @@ def test_llm_step_executor_sends_incremental_turns_when_context_is_remembered() 
         assert "この runtime は、現在の会話で model が前の turn を記憶している前提です" in (
             client.requests[0].messages[0].content
         )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_reuses_cached_workspace_index_between_steps() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        specs_dir = base / "specs"
+        specs_dir.mkdir()
+        (specs_dir / "requirements.txt").write_text("content", encoding="utf-8")
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "First step finished."
+                  }
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Second step finished."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        scan_count = 0
+        original_scan = executor._workspace_inventory._scan_roots
+
+        def counting_scan(
+            *,
+            roots: tuple[Path, ...],
+            indexed_files: list[dict[str, object]],
+            indexed_paths: set[str],
+        ) -> None:
+            nonlocal scan_count
+            scan_count += 1
+            original_scan(
+                roots=roots,
+                indexed_files=indexed_files,
+                indexed_paths=indexed_paths,
+            )
+
+        executor._workspace_inventory._scan_roots = counting_scan
+        workflow = Workflow(
+            workflow_id="wf-cache",
+            name="Cache workspace index",
+            version=1,
+            objective="Reuse the workspace file index across steps.",
+        )
+        step = Step(
+            step_id="cache_step",
+            name="Cache step",
+            description="Finish immediately.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={},
+        )
+        mcp_client = FakeMcpClient()
+
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert scan_count == 1
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_invalidates_workspace_index_after_mcp_tool_call() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Warm cache."
+                  }
+                }
+                """,
+                """
+                {
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.read_sheet",
+                  "input": {"file": "sales.xlsx", "sheet": "Sheet1"}
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Tool call finished."
+                  }
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Cache rebuilt."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        scan_count = 0
+        original_scan = executor._workspace_inventory._scan_roots
+
+        def counting_scan(
+            *,
+            roots: tuple[Path, ...],
+            indexed_files: list[dict[str, object]],
+            indexed_paths: set[str],
+        ) -> None:
+            nonlocal scan_count
+            scan_count += 1
+            original_scan(
+                roots=roots,
+                indexed_files=indexed_files,
+                indexed_paths=indexed_paths,
+            )
+
+        executor._workspace_inventory._scan_roots = counting_scan
+        workflow = Workflow(
+            workflow_id="wf-invalidate",
+            name="Invalidate cache",
+            version=1,
+            objective="Rebuild the workspace index after tool side effects.",
+        )
+        step = Step(
+            step_id="invalidate_step",
+            name="Invalidate step",
+            description="Call a tool, then finish.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+        mcp_client = FakeMcpClient()
+
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert scan_count == 2
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_caches_tool_catalog_between_steps() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "First step finished."
+                  }
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Second step finished."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-tools",
+            name="Cache tool catalog",
+            version=1,
+            objective="Reuse tool discovery between steps.",
+        )
+        step = Step(
+            step_id="tool_cache_step",
+            name="Tool cache step",
+            description="Finish immediately.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={},
+        )
+        mcp_client = CountingToolDiscoveryMcpClient()
+
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+        executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert mcp_client.describe_calls == 1
     finally:
         shutil.rmtree(base, ignore_errors=True)
