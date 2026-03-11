@@ -5,10 +5,14 @@ from typing import Any
 
 import pytest
 
-import orchestra_agent.runtime as runtime_module
 from orchestra_agent.adapters.llm import GoogleGeminiLlmClient
 from orchestra_agent.adapters.planner import LlmStepProposalProvider
 from orchestra_agent.runtime import RuntimeConfig, _build_llm_provider
+from orchestra_agent.runtime_support import DefaultLlmProviderFactory
+from orchestra_agent.runtime_support.llm_provider_plugins import (
+    LlmProviderBundle,
+    LlmProviderDefinition,
+)
 
 
 def test_build_llm_provider_supports_google_api_key_fallback(
@@ -80,8 +84,6 @@ def test_build_llm_provider_passes_tls_ca_bundle_to_openai(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(runtime_module, "OpenAILlmClient", DummyOpenAILlmClient)
-
     provider, client = _build_llm_provider(
         RuntimeConfig(
             workspace=Path("."),
@@ -93,7 +95,8 @@ def test_build_llm_provider_passes_tls_ca_bundle_to_openai(
             llm_provider="openai",
             llm_tls_verify=True,
             llm_tls_ca_bundle=ca_bundle,
-        )
+        ),
+        factory=DefaultLlmProviderFactory(openai_client_type=DummyOpenAILlmClient),
     )
 
     assert isinstance(provider, LlmStepProposalProvider)
@@ -121,9 +124,7 @@ def test_build_llm_provider_rejects_missing_tls_ca_bundle(
         )
 
 
-def test_build_llm_provider_supports_chatgpt_playwright(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_build_llm_provider_supports_external_chatgpt_playwright_provider() -> None:
     captured: dict[str, Any] = {}
 
     class DummyChatGptPlaywrightLlmClient:
@@ -146,11 +147,22 @@ def test_build_llm_provider_supports_chatgpt_playwright(
         def close(self) -> None:
             return None
 
-    monkeypatch.setattr(
-        runtime_module,
-        "ChatGptPlaywrightLlmClient",
-        DummyChatGptPlaywrightLlmClient,
-    )
+    def build_chatgpt_provider(config: RuntimeConfig) -> LlmProviderBundle:
+        llm_client = DummyChatGptPlaywrightLlmClient(
+            start_url=config.llm_chatgpt_url,
+            chrome_path=config.llm_chatgpt_chrome_path,
+            profile_dir=config.llm_chatgpt_profile_dir,
+            port=config.llm_chatgpt_port,
+        )
+        return LlmProviderBundle(
+            proposal_provider=LlmStepProposalProvider(
+                llm_client=llm_client,
+                language=config.llm_language,
+                temperature=config.llm_temperature,
+                max_tokens=config.llm_max_tokens,
+            ),
+            llm_client=llm_client,
+        )
 
     provider, client = _build_llm_provider(
         RuntimeConfig(
@@ -165,7 +177,16 @@ def test_build_llm_provider_supports_chatgpt_playwright(
             llm_chatgpt_chrome_path=r"C:\Chrome\chrome.exe",
             llm_chatgpt_profile_dir=Path(".chatgpt-profile"),
             llm_chatgpt_port=9333,
-        )
+        ),
+        factory=DefaultLlmProviderFactory(
+            external_provider_definitions={
+                "chatgpt_playwright": LlmProviderDefinition(
+                    name="chatgpt_playwright",
+                    builder=build_chatgpt_provider,
+                    source="tests.private.chatgpt_provider",
+                )
+            }
+        ),
     )
 
     assert isinstance(provider, LlmStepProposalProvider)
@@ -176,3 +197,18 @@ def test_build_llm_provider_supports_chatgpt_playwright(
         "profile_dir": Path(".chatgpt-profile"),
         "port": 9333,
     }
+
+
+def test_build_llm_provider_rejects_unknown_custom_provider() -> None:
+    with pytest.raises(ValueError, match="llm.provider_modules"):
+        _build_llm_provider(
+            RuntimeConfig(
+                workspace=Path("."),
+                workflow_root=Path("workflow"),
+                plan_root=Path("plan"),
+                snapshots_dir=Path(".orchestra_snapshots"),
+                state_root=Path(".orchestra_state/runs"),
+                audit_root=Path(".orchestra_state/audit"),
+                llm_provider="private_chatgpt",
+            )
+        )

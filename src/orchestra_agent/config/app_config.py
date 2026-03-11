@@ -80,6 +80,7 @@ class ApiSettings:
 @dataclass(slots=True)
 class LlmSettings:
     provider: LlmProviderName = "none"
+    provider_modules: tuple[str, ...] = ()
     proposal_file: str | None = None
     planner_mode: PlannerMode | None = None
     language: LlmLanguage = "en"
@@ -162,6 +163,9 @@ class AppConfig:
             ),
             llm=LlmSettings(
                 provider=_as_llm_provider(llm_payload.get("provider"), "none"),
+                provider_modules=tuple(
+                    _as_optional_str_list(llm_payload.get("provider_modules"))
+                ),
                 proposal_file=_as_optional_str(llm_payload.get("proposal_file")),
                 planner_mode=_as_optional_planner_mode(llm_payload.get("planner_mode")),
                 language=as_llm_language(llm_payload.get("language"), "en"),
@@ -291,6 +295,14 @@ def _as_optional_str(value: Any) -> str | None:
     return value
 
 
+def _as_optional_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("Config value must be an array of strings.")
+    return [item.strip() for item in value if item.strip()]
+
+
 def _as_bool(value: Any, default: bool) -> bool:
     if value is None:
         return default
@@ -357,11 +369,9 @@ def _as_mcp_server_settings(value: Any) -> list[McpServerSettings]:
 def _as_llm_provider(value: Any, default: LlmProviderName) -> LlmProviderName:
     if value is None:
         return default
-    if value not in ("none", "file", "openai", "google", "chatgpt_playwright"):
-        raise ValueError(
-            "llm.provider must be one of: none, file, openai, google, chatgpt_playwright."
-        )
-    return cast(LlmProviderName, value)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("llm.provider must be a non-empty string.")
+    return cast(LlmProviderName, value.strip())
 
 
 def _as_optional_planner_mode(value: Any) -> PlannerMode | None:

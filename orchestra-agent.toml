@@ -40,6 +40,7 @@ port = 9000
 # Private-use browser-backed ChatGPT custom GPT integration.
 # This mode does not use OPENAI_API_KEY / GEMINI_API_KEY.
 provider = "chatgpt_playwright"
+provider_modules = ["orchestra_agent.adapters.llm.chatgpt_playwright_provider"]
 planner_mode = "full"
 # Natural-language system prompts: en / ja / zh / es / vi
 language = "ja"

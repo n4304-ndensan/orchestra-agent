@@ -43,6 +43,8 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
                 'tool_group = "excel"',
                 "",
                 "[llm]",
+                'provider = "private_chatgpt"',
+                'provider_modules = ["private_repo.orchestra.chatgpt_provider"]',
                 'language = "ja"',
                 "remembers_context = true",
                 "tls_verify = false",
@@ -64,6 +66,8 @@ def test_load_app_config_reads_toml_and_resolves_workspace(sandbox_dir: Path) ->
         "http://orchestra-mcp-excel:8020/mcp",
     )
     assert config.mcp.resolve_server("excel").tool_group == "excel"
+    assert config.llm.provider == "private_chatgpt"
+    assert config.llm.provider_modules == ("private_repo.orchestra.chatgpt_provider",)
     assert config.llm.language == "ja"
     assert config.llm.remembers_context is True
     assert config.llm.tls_verify is False

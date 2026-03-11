@@ -13,7 +13,7 @@ from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
 from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
 from orchestra_agent.shared.llm_prompting import LlmLanguage
 
-type LlmProviderName = Literal["none", "file", "openai", "google", "chatgpt_playwright"]
+type LlmProviderName = str
 type PlannerMode = Literal["deterministic", "augmented", "full"]
 
 
@@ -38,6 +38,7 @@ class RuntimeConfig:
     mcp_endpoint: str | None = None
     mcp_endpoints: tuple[str, ...] = ()
     llm_provider: LlmProviderName = "none"
+    llm_provider_modules: tuple[str, ...] = ()
     llm_proposal_file: str | None = None
     llm_openai_model: str = "gpt-4.1-mini"
     llm_openai_api_key_env: str = "OPENAI_API_KEY"

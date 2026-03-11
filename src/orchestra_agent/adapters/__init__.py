@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
 from orchestra_agent.adapters.db import (
     FilesystemAgentStateStore,
     FilesystemAuditLogger,
@@ -9,11 +14,6 @@ from orchestra_agent.adapters.db import (
     XmlWorkflowRepository,
 )
 from orchestra_agent.adapters.execution import LlmStepExecutor
-from orchestra_agent.adapters.llm import (
-    ChatGptPlaywrightLlmClient,
-    GoogleGeminiLlmClient,
-    OpenAILlmClient,
-)
 from orchestra_agent.adapters.mcp import (
     JsonRpcMcpClient,
     MockExcelMcpClient,
@@ -55,3 +55,10 @@ __all__ = [
     "StructuredLlmPlanner",
     "XmlWorkflowRepository",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"ChatGptPlaywrightLlmClient", "GoogleGeminiLlmClient", "OpenAILlmClient"}:
+        module = import_module("orchestra_agent.adapters.llm")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -53,7 +53,7 @@ def test_parse_feedback_input_supports_inline_messages() -> None:
     assert _parse_feedback_input("yes") is None
 
 
-def test_build_parser_accepts_chatgpt_playwright_runtime_arguments() -> None:
+def test_build_parser_accepts_custom_llm_provider_modules() -> None:
     parser = build_parser(AppConfig())
 
     args = parser.parse_args(
@@ -61,7 +61,9 @@ def test_build_parser_accepts_chatgpt_playwright_runtime_arguments() -> None:
             "run",
             "画像を解析してJSON化して",
             "--llm-provider",
-            "chatgpt_playwright",
+            "private_chatgpt",
+            "--llm-provider-module",
+            "private_repo.orchestra.chatgpt_provider",
             "--llm-chatgpt-url",
             "https://chatgpt.com/g/private-agent",
             "--llm-chatgpt-chrome-path",
@@ -73,7 +75,8 @@ def test_build_parser_accepts_chatgpt_playwright_runtime_arguments() -> None:
         ]
     )
 
-    assert args.llm_provider == "chatgpt_playwright"
+    assert args.llm_provider == "private_chatgpt"
+    assert args.llm_provider_module == ["private_repo.orchestra.chatgpt_provider"]
     assert args.llm_chatgpt_url == "https://chatgpt.com/g/private-agent"
     assert args.llm_chatgpt_chrome_path == r"C:\Chrome\chrome.exe"
     assert args.llm_chatgpt_profile_dir == ".chatgpt-profile"

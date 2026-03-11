@@ -15,10 +15,13 @@
 `orchestra-agent.toml` は private 用に次を既定化しています。
 
 - `llm.provider = "chatgpt_playwright"`
+- `llm.provider_modules = ["orchestra_agent.adapters.llm.chatgpt_playwright_provider"]`
 - `llm.planner_mode = "full"`
 - `llm.chatgpt_url = "https://chatgpt.com/g/g-69919f16473081918e2c40de0c8be30f-shikiho-image-json-extractor"`
 - `llm.chatgpt_profile_dir = "./.chatgpt-profile"`
 - `mcp.servers[].endpoint = http://127.0.0.1:8010/mcp / http://127.0.0.1:8020/mcp`
+
+`chatgpt_playwright` 自体は core runtime に hardcode していません。public 側は `llm.provider_modules` で external provider module を読むだけで、この private branch では `orchestra_agent.adapters.llm.chatgpt_playwright_provider` を差し込んでいます。private repository 側で module path を差し替えれば、別ブランチの LLM 実装変更と干渉しにくくなります。
 
 `chatgpt_profile_dir` には ChatGPT の login session が保存されます。`.gitignore` 済みです。
 
