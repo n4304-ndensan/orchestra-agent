@@ -220,3 +220,46 @@ def test_structured_llm_planner_includes_replan_source_document() -> None:
         request_body
     )
     assert "<workflow id=\\\"wf-replan\\\" version=\\\"1\\\" />" in request_body
+
+
+def test_structured_llm_planner_localizes_system_prompt() -> None:
+    workflow = Workflow(
+        workflow_id="wf-lang",
+        name="Localized prompt",
+        version=1,
+        objective="Summarize workbook contents.",
+    )
+    client = FakeLlmClient(
+        [
+            """
+            {
+              "steps": [
+                {
+                  "step_id": "review",
+                  "name": "Review",
+                  "description": "Review the workbook.",
+                  "tool_ref": "orchestra.ai_review",
+                  "resolved_input": {},
+                  "depends_on": [],
+                  "risk_level": "LOW",
+                  "requires_approval": false,
+                  "run": true,
+                  "skip": false,
+                  "backup_scope": "NONE"
+                }
+              ]
+            }
+            """
+        ]
+    )
+    planner = StructuredLlmPlanner(
+        llm_client=client,
+        available_tools_supplier=lambda: ["fs_read_text"],
+        language="ja",
+    )
+
+    planner.compile_step_plan(workflow)
+
+    assert "自然言語の説明・要約・自由記述は日本語で行ってください" in client.requests[0].messages[
+        0
+    ].content

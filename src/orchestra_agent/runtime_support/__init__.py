@@ -11,6 +11,7 @@ from .factories import (
 )
 from .models import (
     AppRuntime,
+    LlmLanguage,
     LlmProviderName,
     PlannerMode,
     RuntimeArtifacts,
@@ -35,6 +36,7 @@ __all__ = [
     "IMcpClientFactory",
     "IPlannerFactory",
     "IRuntimeFactory",
+    "LlmLanguage",
     "LlmProviderName",
     "PlannerMode",
     "RuntimeArtifacts",

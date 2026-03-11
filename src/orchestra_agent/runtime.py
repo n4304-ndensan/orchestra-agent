@@ -4,6 +4,7 @@ from orchestra_agent.runtime_support import (
     DefaultLlmProviderFactory,
     DefaultRuntimeFactory,
     IRuntimeFactory,
+    LlmLanguage,
     LlmProviderName,
     PlannerMode,
     RuntimeArtifacts,
@@ -38,6 +39,7 @@ def _build_llm_provider(config: RuntimeConfig):
 __all__ = [
     "AppRuntime",
     "IRuntimeFactory",
+    "LlmLanguage",
     "LlmProviderName",
     "PlannerMode",
     "RuntimeArtifacts",

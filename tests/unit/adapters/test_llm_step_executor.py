@@ -385,7 +385,7 @@ def test_llm_step_executor_supports_attachment_requests_inside_actions_payload()
         shutil.rmtree(base, ignore_errors=True)
 
 
-def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
+def test_llm_step_executor_rejects_paths_outside_workspace_then_allows_correction() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
     try:
@@ -396,6 +396,15 @@ def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
                   "type": "write_file",
                   "path": "../outside.txt",
                   "content": "nope"
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "corrected",
+                    "summary": "Adjusted after sandbox rejection."
+                  }
                 }
                 """
             ]
@@ -415,14 +424,19 @@ def test_llm_step_executor_rejects_paths_outside_workspace() -> None:
             resolved_input={},
         )
 
-        with pytest.raises(ValueError, match="Workspace sandbox rejected path"):
-            executor.execute(
-                workflow=workflow,
-                step=step,
-                resolved_input=step.resolved_input,
-                step_results={},
-                mcp_client=FakeMcpClient(),
-            )
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "corrected",
+            "summary": "Adjusted after sandbox rejection.",
+        }
+        assert '"kind": "workspace_sandbox"' in client.requests[1].messages[-1].content
     finally:
         shutil.rmtree(base, ignore_errors=True)
 
@@ -748,5 +762,132 @@ def test_llm_step_executor_normalizes_excel_alias_inputs_before_mcp_call() -> No
             "output_file": "output/HelloWorld.xlsx",
         }
         assert len(client.requests) == 4
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_recovers_when_model_returns_steps_payload() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "steps": [
+                    {
+                      "step_id": "wrong",
+                      "name": "Wrong payload"
+                    }
+                  ]
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Recovered after runtime error."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-recover",
+            name="Recover runtime output",
+            version=1,
+            objective="Finish the step after an invalid action payload.",
+        )
+        step = Step(
+            step_id="recover_runtime",
+            name="Recover runtime",
+            description="Return runtime actions only.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={},
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Recovered after runtime error.",
+        }
+        assert len(client.requests) == 2
+        assert '"runtime_error"' in client.requests[1].messages[-1].content
+        assert '"kind": "returned_step_plan"' in client.requests[1].messages[-1].content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_sends_incremental_turns_when_context_is_remembered() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "write_file",
+                  "path": "reports/summary.txt",
+                  "content": "done"
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Used remembered context."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(
+            client,
+            workspace_root=base,
+            remembers_context=True,
+            language="ja",
+        )
+        workflow = Workflow(
+            workflow_id="wf-memory",
+            name="Remembered context",
+            version=1,
+            objective="Use incremental runtime turns.",
+        )
+        step = Step(
+            step_id="memory_step",
+            name="Memory step",
+            description="Write a file and finish.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={},
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Used remembered context.",
+        }
+        assert len(client.requests[0].messages) == 2
+        assert len(client.requests[1].messages) == 1
+        assert '"write_file_result"' in client.requests[1].messages[0].content
+        assert "この runtime は、現在の会話で model が前の turn を記憶している前提です" in (
+            client.requests[0].messages[0].content
+        )
     finally:
         shutil.rmtree(base, ignore_errors=True)

@@ -19,6 +19,7 @@ from orchestra_agent.ports.llm_client import (
 from orchestra_agent.ports.planner import IPlanner
 from orchestra_agent.shared.llm_json import extract_json_payload
 from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
+from orchestra_agent.shared.llm_prompting import LlmLanguage, build_system_prompt
 
 
 class StructuredLlmPlanner(IPlanner):
@@ -32,6 +33,7 @@ class StructuredLlmPlanner(IPlanner):
         available_tools_supplier: Callable[[], list[str]],
         available_tool_catalog_supplier: Callable[[], list[dict[str, Any]]] | None = None,
         fallback_planner: IPlanner | None = None,
+        language: LlmLanguage = "en",
         temperature: float = 0.0,
         max_tokens: int = 2400,
     ) -> None:
@@ -39,6 +41,7 @@ class StructuredLlmPlanner(IPlanner):
         self._available_tools_supplier = available_tools_supplier
         self._available_tool_catalog_supplier = available_tool_catalog_supplier
         self._fallback_planner = fallback_planner
+        self._language = language
         self._temperature = temperature
         self._max_tokens = max_tokens
         self.last_warning: str | None = None
@@ -108,9 +111,9 @@ class StructuredLlmPlanner(IPlanner):
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:
         return tuple(LlmAttachment(path=file_path) for file_path in workflow.reference_files)
 
-    @staticmethod
-    def _system_prompt() -> str:
-        return (
+    def _system_prompt(self) -> str:
+        return build_system_prompt(
+            (
             "You are a workflow planner. Return ONLY JSON with this shape:\n"
             '{"steps":[{"step_id":"...","name":"...","description":"...","tool_ref":"...",'
             '"resolved_input":{},"depends_on":[],"risk_level":"LOW","requires_approval":true,'
@@ -141,6 +144,9 @@ class StructuredLlmPlanner(IPlanner):
             "13) Set requires_approval=true on the first executable step when the plan "
             "contains any risky or user-visible mutation checkpoint.\n"
             "14) Keep output valid JSON and do not add commentary."
+            ),
+            language=self._language,
+            prompt_kind="planner",
         )
 
     @staticmethod

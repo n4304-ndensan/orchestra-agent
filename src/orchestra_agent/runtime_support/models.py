@@ -11,6 +11,7 @@ from orchestra_agent.adapters.db import (
 )
 from orchestra_agent.api import ApprovalAPI, RunAPI, WorkflowAPI
 from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
+from orchestra_agent.shared.llm_prompting import LlmLanguage
 
 type LlmProviderName = Literal["none", "file", "openai", "google"]
 type PlannerMode = Literal["deterministic", "augmented", "full"]
@@ -21,6 +22,8 @@ class RuntimeMetadata:
     app_version: str
     llm_provider: LlmProviderName
     planner_mode: PlannerMode
+    llm_language: LlmLanguage
+    llm_remembers_context: bool
     mcp_endpoints: tuple[str, ...]
 
 
@@ -47,6 +50,8 @@ class RuntimeConfig:
     llm_tls_verify: bool = True
     llm_tls_ca_bundle: Path | None = None
     llm_planner_mode: PlannerMode | None = None
+    llm_language: LlmLanguage = "en"
+    llm_remembers_context: bool = False
     llm_temperature: float = 0.0
     llm_max_tokens: int = 1200
     repair_max_attempts: int = 3

@@ -19,6 +19,7 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.planner import IPlanner
 from orchestra_agent.shared.llm_json import extract_json_payload
+from orchestra_agent.shared.llm_prompting import LlmLanguage, build_system_prompt
 
 
 class IStepProposalProvider(Protocol):
@@ -52,15 +53,18 @@ class LlmStepProposalProvider(IStepProposalProvider):
     def __init__(
         self,
         llm_client: ILlmClient,
+        language: LlmLanguage = "en",
         temperature: float = 0.0,
         max_tokens: int = 1200,
     ) -> None:
         self._llm_client = llm_client
+        self._language = language
         self._temperature = temperature
         self._max_tokens = max_tokens
 
     def propose(self, workflow: Workflow, draft_plan: StepPlan) -> dict[str, Any] | None:
-        system_prompt = (
+        system_prompt = build_system_prompt(
+            (
             "You are a workflow plan patch generator for Excel automation.\n"
             "Return ONLY a JSON object with this exact top-level shape:\n"
             '{"steps":[{"step_id":"...", "field":"value"}]}\n'
@@ -72,6 +76,9 @@ class LlmStepProposalProvider(IStepProposalProvider):
             "change_summary as the authoritative replan input.\n"
             "5) Respect workflow.feedback_history as the latest correction intent.\n"
             "6) Keep output minimal and valid JSON."
+            ),
+            language=self._language,
+            prompt_kind="proposal",
         )
         draft_payload = {
             "workflow": workflow_to_dict(workflow),

@@ -40,6 +40,10 @@ port = 9000
 # Set to "openai" or "google" for full AI-controlled planning and MCP runtime orchestration.
 provider = "google"
 planner_mode = "full"
+# Natural-language system prompts: en / ja / zh / es / vi
+language = "ja"
+# Enable only for chat-style providers that really remember prior turns across requests.
+remembers_context = false
 openai_model = "gpt-4.1-mini"
 openai_api_key_env = "OPENAI_API_KEY"
 openai_base_url = "https://api.openai.com"
