@@ -12,6 +12,11 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      WORKSPACE_ROOT: /workspace/workspace
+      EXCEL_MCP_CONFIG: ${EXCEL_MCP_CONFIG:-}
+      EXCEL_MCP_REMOTE_ENABLED: ${EXCEL_MCP_REMOTE_ENABLED:-false}
+      EXCEL_MCP_AUDIT_DIR: /workspace/workspace/.orchestra_state/audit
+      EXCEL_MCP_BACKUP_DIR: /workspace/workspace/.excel_mcp_backups
       ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
       ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
       ORCHESTRA_MCP_LOG_LEVEL: ${ORCHESTRA_MCP_LOG_LEVEL:-INFO}

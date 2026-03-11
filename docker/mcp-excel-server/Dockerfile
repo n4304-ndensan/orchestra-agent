@@ -4,6 +4,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_NO_CACHE_DIR=1
 ENV PYTHONPATH=/workspace/project/src:/app/src
+ENV WORKSPACE_ROOT=/workspace/workspace
+ENV EXCEL_MCP_AUDIT_DIR=/workspace/workspace/.orchestra_state/audit
+ENV EXCEL_MCP_BACKUP_DIR=/workspace/workspace/.excel_mcp_backups
+ENV EXCEL_MCP_REMOTE_ENABLED=false
 
 WORKDIR /app
 

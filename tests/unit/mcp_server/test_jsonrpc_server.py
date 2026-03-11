@@ -25,6 +25,7 @@ def test_tool_registry_exposes_generic_excel_and_file_tools(workspace_dir: Path)
     names = [tool["name"] for tool in registry.list_tools()]
 
     assert "excel.create_file" in names
+    assert "open_edit_session" in names
     assert "fs_copy_file" in names
 
 

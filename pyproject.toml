@@ -21,7 +21,9 @@ orchestra-agent-mcp = "orchestra_agent.mcp_server.__main__:main"
 mcp-server = [
     "mcp>=1.0.0",
     "openpyxl>=3.1.5",
+    "pandas>=2.2.3",
     "pillow>=11.3.0",
+    "PyYAML>=6.0.2",
 ]
 
 [dependency-groups]
