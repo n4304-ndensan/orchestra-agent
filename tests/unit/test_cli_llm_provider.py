@@ -123,7 +123,6 @@ def test_build_llm_provider_rejects_missing_tls_ca_bundle(
             )
         )
 
-
 def test_build_llm_provider_supports_external_chatgpt_playwright_provider() -> None:
     captured: dict[str, Any] = {}
 
