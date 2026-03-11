@@ -16,7 +16,13 @@ from orchestra_agent.ports.llm_client import (
 )
 from orchestra_agent.ports.mcp_client import IMcpClient
 from orchestra_agent.ports.step_executor import IStepExecutor
+from orchestra_agent.shared.error_handling import clean_exception_message, text_preview
 from orchestra_agent.shared.llm_json import extract_json_payload
+from orchestra_agent.shared.llm_prompting import (
+    LlmLanguage,
+    build_runtime_error_feedback,
+    build_system_prompt,
+)
 from orchestra_agent.shared.llm_step_runtime_protocol import (
     STEP_RUNTIME_PROTOCOL_VERSION,
     CallMcpToolAction,
@@ -73,6 +79,8 @@ class LlmStepExecutor(IStepExecutor):
         self,
         llm_client: ILlmClient,
         workspace_root: Path,
+        language: LlmLanguage = "en",
+        remembers_context: bool = False,
         temperature: float = 0.0,
         max_tokens: int = 2000,
         max_agent_turns: int = 10,
@@ -81,6 +89,8 @@ class LlmStepExecutor(IStepExecutor):
     ) -> None:
         self._llm_client = llm_client
         self._workspace_root = workspace_root.resolve()
+        self._language = language
+        self._remembers_context = remembers_context
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_agent_turns = max_agent_turns
@@ -122,116 +132,133 @@ class LlmStepExecutor(IStepExecutor):
         written_files: list[str] = []
         mcp_results: list[dict[str, Any]] = []
         last_mcp_result: dict[str, Any] | None = None
+        last_error: Exception | None = None
 
-        for _turn in range(self._max_agent_turns):
+        for turn_index in range(self._max_agent_turns):
             request = LlmGenerateRequest(
-                messages=tuple(messages),
+                messages=self._request_messages(messages, turn_index=turn_index),
                 response_format="json_object",
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
             )
             raw = self._llm_client.generate(request)
-            parsed = self._extract_json(raw)
-            messages.append(
-                LlmMessage(role="assistant", content=self._json_text(parsed))
-            )
-            if self._is_legacy_action_payload(parsed):
-                if self._handle_attachment_payload(
-                    parsed=parsed,
-                    workflow=workflow,
-                    step=step,
-                    indexed_files=indexed_files,
-                    attached_files=attached_files,
-                    requested_paths=requested_paths,
-                    messages=messages,
-                ):
+            parsed: Any | None = None
+            try:
+                parsed = self._extract_json(raw)
+                messages.append(
+                    LlmMessage(role="assistant", content=self._json_text(parsed))
+                )
+                if self._is_legacy_action_payload(parsed):
+                    if self._handle_attachment_payload(
+                        parsed=parsed,
+                        workflow=workflow,
+                        step=step,
+                        indexed_files=indexed_files,
+                        attached_files=attached_files,
+                        requested_paths=requested_paths,
+                        messages=messages,
+                    ):
+                        continue
+                    return self._apply_actions(parsed, mcp_client, allowed_tools)
+
+                action = parse_runtime_action(parsed)
+
+                if isinstance(action, RequestFileAttachmentsAction):
+                    self._apply_attachment_request(
+                        workflow=workflow,
+                        step=step,
+                        request_actions=[
+                            {
+                                "paths": action.paths,
+                                **(
+                                    {"reason": action.reason}
+                                    if isinstance(action.reason, str)
+                                    else {}
+                                ),
+                                **action.extensions,
+                            }
+                        ],
+                        indexed_files=indexed_files,
+                        attached_files=attached_files,
+                        requested_paths=requested_paths,
+                        messages=messages,
+                    )
                     continue
-                return self._apply_actions(parsed, mcp_client, allowed_tools)
-
-            action = parse_runtime_action(parsed)
-
-            if isinstance(action, RequestFileAttachmentsAction):
-                self._apply_attachment_request(
-                    workflow=workflow,
-                    step=step,
-                    request_actions=[
+                if isinstance(action, FinishAction):
+                    return self._build_execution_result(
+                        explicit_result=action.result,
+                        last_mcp_result=last_mcp_result,
+                        written_files=written_files,
+                        mcp_results=mcp_results,
+                    )
+                if isinstance(action, CallMcpToolAction):
+                    tool_ref, normalized_input = self._prepare_mcp_tool_call(
                         {
-                            "paths": action.paths,
-                            **(
-                                {"reason": action.reason}
-                                if isinstance(action.reason, str)
-                                else {}
+                            "tool_ref": action.tool_ref,
+                            "input": action.input,
+                        },
+                        allowed_tools,
+                    )
+                    result = mcp_client.call_tool(tool_ref, normalized_input)
+                    last_mcp_result = result
+                    mcp_results.append(result)
+                    messages.append(
+                        LlmMessage(
+                            role="user",
+                            content=self._json_text(
+                                self._sanitize_for_llm(
+                                    {
+                                        "tool_result": {
+                                            "tool_ref": tool_ref,
+                                            "input": normalized_input,
+                                            "result": result,
+                                        }
+                                    }
+                                )
                             ),
-                            **action.extensions,
+                        )
+                    )
+                    continue
+                if isinstance(action, WriteFileAction):
+                    written_path = self._write_file(
+                        {
+                            "path": action.path,
+                            "content": action.content,
                         }
-                    ],
-                    indexed_files=indexed_files,
-                    attached_files=attached_files,
-                    requested_paths=requested_paths,
-                    messages=messages,
-                )
-                continue
-
-            if isinstance(action, FinishAction):
-                return self._build_execution_result(
-                    explicit_result=action.result,
-                    last_mcp_result=last_mcp_result,
-                    written_files=written_files,
-                    mcp_results=mcp_results,
-                )
-            if isinstance(action, CallMcpToolAction):
-                tool_ref, normalized_input = self._prepare_mcp_tool_call(
-                    {
-                        "tool_ref": action.tool_ref,
-                        "input": action.input,
-                    },
-                    allowed_tools,
-                )
-                result = mcp_client.call_tool(tool_ref, normalized_input)
-                last_mcp_result = result
-                mcp_results.append(result)
+                    )
+                    written_files.append(written_path)
+                    messages.append(
+                        LlmMessage(
+                            role="user",
+                            content=self._json_text(
+                                self._sanitize_for_llm(
+                                    {
+                                        "write_file_result": {
+                                            "path": written_path,
+                                        }
+                                    }
+                                )
+                            ),
+                        )
+                    )
+                    continue
+                raise ValueError(f"Unsupported LLM action type: {action.type}")
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
                 messages.append(
                     LlmMessage(
                         role="user",
-                        content=self._json_text(
-                            self._sanitize_for_llm(
-                                {
-                                    "tool_result": {
-                                        "tool_ref": tool_ref,
-                                        "input": normalized_input,
-                                        "result": result,
-                                    }
-                                }
-                            )
-                        ),
+                        content=self._runtime_error_message(exc, raw_response=raw, parsed=parsed),
                     )
                 )
                 continue
-            if isinstance(action, WriteFileAction):
-                written_path = self._write_file(
-                    {
-                        "path": action.path,
-                        "content": action.content,
-                    }
-                )
-                written_files.append(written_path)
-                messages.append(
-                    LlmMessage(
-                        role="user",
-                        content=self._json_text(
-                            self._sanitize_for_llm(
-                                {
-                                    "write_file_result": {
-                                        "path": written_path,
-                                    }
-                                }
-                            )
-                        ),
-                    )
-                )
-                continue
-            raise ValueError(f"Unsupported LLM action type: {action.type}")
 
+        if last_error is not None:
+            reason = text_preview(clean_exception_message(last_error))
+            raise RuntimeError(
+                "LLM step executor exceeded the maximum execution rounds after runtime corrections. "
+                f"Last error: {reason}"
+            ) from last_error
         raise RuntimeError("LLM step executor exceeded the maximum execution rounds.")
 
     def _build_payload(
@@ -294,9 +321,19 @@ class LlmStepExecutor(IStepExecutor):
             "requested_attachment_paths": requested_paths,
         }
 
-    @staticmethod
-    def _system_prompt() -> str:
-        return (
+    def _request_messages(
+        self,
+        messages: list[LlmMessage],
+        *,
+        turn_index: int,
+    ) -> tuple[LlmMessage, ...]:
+        if not self._remembers_context or turn_index == 0:
+            return tuple(messages)
+        return (messages[-1],)
+
+    def _system_prompt(self) -> str:
+        return build_system_prompt(
+            (
             "You are an AI execution controller working through an MCP runtime.\n"
             "Return ONLY one JSON object per turn using one of these shapes:\n"
             '{"type":"call_mcp_tool","tool_ref":"...","input":{}}\n'
@@ -326,12 +363,48 @@ class LlmStepExecutor(IStepExecutor):
             "12) write_file path must stay inside workspace_root.\n"
             "13) Use exact argument names from the selected MCP tool contract. Do not invent "
             "aliases or cross-server arguments.\n"
-            "14) Keep output valid JSON with no commentary."
+            "14) If you receive runtime_error, repair only the last runtime action. Do not "
+            "return a workflow step plan or a top-level steps array.\n"
+            "15) Keep output valid JSON with no commentary."
+            ),
+            language=self._language,
+            prompt_kind="executor",
+            remembers_context=self._remembers_context,
         )
 
     @staticmethod
     def _extract_json(raw_text: str) -> Any:
         return extract_json_payload(raw_text, label="LLM step executor output")
+
+    def _runtime_error_message(
+        self,
+        exc: Exception,
+        *,
+        raw_response: str,
+        parsed: Any,
+    ) -> str:
+        preview_source = raw_response
+        if isinstance(parsed, dict):
+            preview_source = self._json_text(parsed)
+        return build_runtime_error_feedback(
+            language=self._language,
+            kind=self._runtime_error_kind(exc, parsed),
+            error_message=text_preview(clean_exception_message(exc), limit=240),
+            model_output=text_preview(preview_source, limit=320),
+        )
+
+    @staticmethod
+    def _runtime_error_kind(exc: Exception, parsed: Any) -> str:
+        if isinstance(parsed, dict) and "steps" in parsed:
+            return "returned_step_plan"
+        message = clean_exception_message(exc).lower()
+        if "valid json" in message:
+            return "invalid_json"
+        if "tool '" in message or "allowed mcp tool set" in message:
+            return "invalid_tool"
+        if "workspace sandbox" in message:
+            return "workspace_sandbox"
+        return "runtime_action_error"
 
     def _apply_actions(
         self,

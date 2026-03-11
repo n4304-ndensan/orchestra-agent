@@ -245,6 +245,18 @@ def _add_llm_arguments(parser: argparse.ArgumentParser, defaults: AppConfig) -> 
         help="LLM proposal source for planner augmentation.",
     )
     parser.add_argument(
+        "--llm-language",
+        choices=["en", "ja", "zh", "es", "vi"],
+        default=defaults.llm.language,
+        help="Language for system prompts and natural-language outputs.",
+    )
+    parser.add_argument(
+        "--llm-remembers-context",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.llm.remembers_context,
+        help="Whether the active LLM conversation remembers prior turns without full re-send.",
+    )
+    parser.add_argument(
         "--llm-proposal-file",
         default=defaults.llm.proposal_file,
         help="JSON patch file path when --llm-provider file.",
@@ -970,6 +982,8 @@ def _build_runtime_from_args(
             mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
             llm_provider=args.llm_provider,
             llm_proposal_file=args.llm_proposal_file,
+            llm_language=args.llm_language,
+            llm_remembers_context=args.llm_remembers_context,
             llm_openai_model=args.llm_openai_model,
             llm_openai_api_key_env=args.llm_openai_api_key_env,
             llm_openai_base_url=args.llm_openai_base_url,

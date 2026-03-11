@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from orchestra_agent.runtime import LlmProviderName, PlannerMode
+from orchestra_agent.shared.llm_prompting import LlmLanguage, as_llm_language
 
 CONFIG_ENV_VAR = "ORCHESTRA_CONFIG"
 type McpTransport = Literal["http", "stdio"]
@@ -81,6 +82,8 @@ class LlmSettings:
     provider: LlmProviderName = "none"
     proposal_file: str | None = None
     planner_mode: PlannerMode | None = None
+    language: LlmLanguage = "en"
+    remembers_context: bool = False
     openai_model: str = "gpt-4.1-mini"
     openai_api_key_env: str = "OPENAI_API_KEY"
     openai_base_url: str = "https://api.openai.com"
@@ -161,6 +164,8 @@ class AppConfig:
                 provider=_as_llm_provider(llm_payload.get("provider"), "none"),
                 proposal_file=_as_optional_str(llm_payload.get("proposal_file")),
                 planner_mode=_as_optional_planner_mode(llm_payload.get("planner_mode")),
+                language=as_llm_language(llm_payload.get("language"), "en"),
+                remembers_context=_as_bool(llm_payload.get("remembers_context"), False),
                 openai_model=_as_str(llm_payload.get("openai_model"), "gpt-4.1-mini"),
                 openai_api_key_env=_as_str(
                     llm_payload.get("openai_api_key_env"),

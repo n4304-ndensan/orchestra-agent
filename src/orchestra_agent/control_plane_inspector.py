@@ -86,6 +86,8 @@ class ControlPlaneInspector:
             "workspace": str(self._workspace),
             "llm_provider": metadata.llm_provider,
             "planner_mode": metadata.planner_mode,
+            "llm_language": metadata.llm_language,
+            "llm_remembers_context": metadata.llm_remembers_context,
             "mcp_mode": "mock" if self._runtime.using_mock else "live",
             "mcp_endpoints": list(metadata.mcp_endpoints),
         }

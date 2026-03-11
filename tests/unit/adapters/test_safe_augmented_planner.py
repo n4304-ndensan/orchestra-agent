@@ -149,3 +149,22 @@ def test_llm_step_proposal_provider_includes_replan_context() -> None:
     assert '"replan_context"' in request_body
     assert '"trigger": "feedback"' in request_body
     assert "<workflow id=\\\"wf-1\\\" version=\\\"1\\\" />" in request_body
+
+
+def test_llm_step_proposal_provider_localizes_system_prompt() -> None:
+    workflow = Workflow(
+        workflow_id="wf-lang",
+        name="Localized patch prompt",
+        version=1,
+        objective="Revise the draft plan.",
+    )
+    draft_plan = LlmPlanner().compile_step_plan(workflow)
+    client = FakeLlmClient(response_text='{"steps":[]}')
+    provider = LlmStepProposalProvider(client, language="es")
+
+    provider.propose(workflow, draft_plan)
+
+    assert client.last_request is not None
+    assert "Usa espanol para el razonamiento en lenguaje natural" in (
+        client.last_request.messages[0].content
+    )

@@ -27,6 +27,8 @@ def test_readiness_payload_reports_mock_runtime_details() -> None:
     assert status == HTTPStatus.OK
     assert payload["status"] == "ready"
     assert payload["runtime"]["mcp_mode"] == "mock"
+    assert payload["runtime"]["llm_language"] == "ja"
+    assert payload["runtime"]["llm_remembers_context"] is False
     assert payload["checks"][0]["tool_count"] >= 1
     assert payload["checks"][0]["detail"] == "mock mcp client is active"
 
@@ -56,6 +58,8 @@ def _runtime_stub(*, mcp_client: object, using_mock: bool) -> SimpleNamespace:
             app_version="0.1.0",
             llm_provider="none",
             planner_mode="deterministic",
+            llm_language="ja",
+            llm_remembers_context=False,
             mcp_endpoints=("http://127.0.0.1:8010/mcp",),
         ),
         artifacts=RuntimeArtifacts(

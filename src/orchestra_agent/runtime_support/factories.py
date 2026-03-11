@@ -140,6 +140,7 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
             return LlmProviderBundle(
                 proposal_provider=LlmStepProposalProvider(
                     llm_client=llm_client,
+                    language=config.llm_language,
                     temperature=config.llm_temperature,
                     max_tokens=config.llm_max_tokens,
                 ),
@@ -178,6 +179,7 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
         return LlmProviderBundle(
             proposal_provider=LlmStepProposalProvider(
                 llm_client=google_client,
+                language=config.llm_language,
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
             ),
@@ -222,6 +224,7 @@ class DefaultPlannerFactory(IPlannerFactory):
                 available_tools_supplier=mcp_client.list_tools,
                 available_tool_catalog_supplier=lambda: describe_mcp_tools(mcp_client),
                 fallback_planner=base_planner,
+                language=config.llm_language,
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
             )
@@ -326,6 +329,8 @@ class DefaultRuntimeFactory(IRuntimeFactory):
                 app_version=__version__,
                 llm_provider=config.llm_provider,
                 planner_mode=resolve_planner_mode(config),
+                llm_language=config.llm_language,
+                llm_remembers_context=config.llm_remembers_context,
                 mcp_endpoints=normalized_endpoints,
             ),
             using_mock=mcp_bundle.using_mock,
@@ -352,6 +357,7 @@ class DefaultRuntimeFactory(IRuntimeFactory):
         ):
             return LlmStepProposalProvider(
                 llm_client=llm_client,
+                language=config.llm_language,
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
             )
@@ -368,6 +374,8 @@ class DefaultRuntimeFactory(IRuntimeFactory):
         return LlmStepExecutor(
             llm_client=llm_client,
             workspace_root=config.workspace,
+            language=config.llm_language,
+            remembers_context=config.llm_remembers_context,
             temperature=config.llm_temperature,
             max_tokens=config.llm_max_tokens,
             audit_logger=audit_logger,

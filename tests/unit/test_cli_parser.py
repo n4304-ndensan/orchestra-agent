@@ -30,6 +30,23 @@ def test_build_parser_registers_product_subcommands() -> None:
     assert {"run", "plan", "resume", "status"} <= set(subparsers[0].choices)
 
 
+def test_build_parser_accepts_llm_language_and_memory_flags() -> None:
+    parser = build_parser(AppConfig())
+
+    args = parser.parse_args(
+        [
+            "run",
+            "--llm-language",
+            "ja",
+            "--llm-remembers-context",
+            "objective text",
+        ]
+    )
+
+    assert args.llm_language == "ja"
+    assert args.llm_remembers_context is True
+
+
 def test_parse_feedback_input_supports_inline_messages() -> None:
     assert _parse_feedback_input("feedback output pathを修正") == "output pathを修正"
     assert _parse_feedback_input("f write A1 instead") == "write A1 instead"

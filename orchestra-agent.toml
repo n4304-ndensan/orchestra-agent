@@ -41,6 +41,10 @@ port = 9000
 # This mode does not use OPENAI_API_KEY / GEMINI_API_KEY.
 provider = "chatgpt_playwright"
 planner_mode = "full"
+# Natural-language system prompts: en / ja / zh / es / vi
+language = "ja"
+# Enable only for chat-style providers that really remember prior turns across requests.
+remembers_context = false
 chatgpt_url = "https://chatgpt.com/g/g-69919f16473081918e2c40de0c8be30f-shikiho-image-json-extractor"
 chatgpt_chrome_path = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 chatgpt_profile_dir = "./.chatgpt-profile"
