@@ -35,6 +35,12 @@ from orchestra_agent.application.use_cases import (
 from orchestra_agent.executor import FailureHandler, PlanExecutor
 from orchestra_agent.observability import LoggingLlmClient, LoggingMcpClient
 from orchestra_agent.ports import ILlmClient, IMcpClient, IPlanner
+from orchestra_agent.runtime_support.llm_provider_plugins import (
+    LlmProviderBuilder,
+    LlmProviderBundle,
+    LlmProviderDefinition,
+    load_llm_provider_definitions,
+)
 from orchestra_agent.runtime_support.models import (
     AppRuntime,
     PlannerMode,
@@ -53,12 +59,6 @@ from orchestra_agent.runtime_support.pathing import (
 class McpClientBundle:
     client: IMcpClient
     using_mock: bool
-
-
-@dataclass(slots=True)
-class LlmProviderBundle:
-    proposal_provider: IStepProposalProvider | None
-    llm_client: OpenAILlmClient | GoogleGeminiLlmClient | None
 
 
 class IMcpClientFactory(Protocol):
@@ -104,51 +104,84 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
         *,
         openai_client_type: type[OpenAILlmClient] = OpenAILlmClient,
         google_client_type: type[GoogleGeminiLlmClient] = GoogleGeminiLlmClient,
+        external_provider_definitions: dict[str, LlmProviderDefinition] | None = None,
     ) -> None:
         self._openai_client_type = openai_client_type
         self._google_client_type = google_client_type
+        self._external_provider_definitions = external_provider_definitions
 
     def create(self, config: RuntimeConfig) -> LlmProviderBundle:
-        if config.llm_provider == "none":
-            return LlmProviderBundle(proposal_provider=None, llm_client=None)
+        builtin_provider = self._builtin_providers().get(config.llm_provider)
+        if builtin_provider is not None:
+            return builtin_provider(config)
 
-        if config.llm_provider == "file":
-            if config.llm_proposal_file is None:
-                raise ValueError("--llm-proposal-file is required when --llm-provider file.")
-            proposal_path = resolve_file_arg(config.llm_proposal_file, config.workspace)
-            return LlmProviderBundle(
-                proposal_provider=JsonFileStepProposalProvider(proposal_path),
-                llm_client=None,
-            )
+        external_provider = self._external_providers(config).get(config.llm_provider)
+        if external_provider is not None:
+            return external_provider.builder(config)
 
+        raise ValueError(
+            "Unknown llm.provider "
+            f"'{config.llm_provider}'. Built-ins: none, file, openai, google. "
+            "Register external providers with llm.provider_modules or "
+            "--llm-provider-module."
+        )
+
+    def _builtin_providers(self) -> dict[str, LlmProviderBuilder]:
+        return {
+            "none": self._create_none_provider,
+            "file": self._create_file_provider,
+            "openai": self._create_openai_provider,
+            "google": self._create_google_provider,
+        }
+
+    def _external_providers(self, config: RuntimeConfig) -> dict[str, LlmProviderDefinition]:
+        if self._external_provider_definitions is not None:
+            return self._external_provider_definitions
+        return load_llm_provider_definitions(config.llm_provider_modules)
+
+    @staticmethod
+    def _create_none_provider(config: RuntimeConfig) -> LlmProviderBundle:
+        return LlmProviderBundle(proposal_provider=None, llm_client=None)
+
+    @staticmethod
+    def _create_file_provider(config: RuntimeConfig) -> LlmProviderBundle:
+        if config.llm_proposal_file is None:
+            raise ValueError("--llm-proposal-file is required when --llm-provider file.")
+        proposal_path = resolve_file_arg(config.llm_proposal_file, config.workspace)
+        return LlmProviderBundle(
+            proposal_provider=JsonFileStepProposalProvider(proposal_path),
+            llm_client=None,
+        )
+
+    def _create_openai_provider(self, config: RuntimeConfig) -> LlmProviderBundle:
         verify = self._resolve_tls_verify(config)
-
-        if config.llm_provider == "openai":
-            api_key = self._required_env(config.llm_openai_api_key_env, "OpenAI LLM")
-            llm_client = self._openai_client_type(
-                api_key=api_key,
-                model=config.llm_openai_model,
-                base_url=config.llm_openai_base_url,
-                timeout_seconds=config.llm_openai_timeout,
-                verify=verify,
-            )
-            return LlmProviderBundle(
-                proposal_provider=LlmStepProposalProvider(
-                    llm_client=llm_client,
-                    language=config.llm_language,
-                    temperature=config.llm_temperature,
-                    max_tokens=config.llm_max_tokens,
-                ),
+        api_key = self._required_env(config.llm_openai_api_key_env, "OpenAI LLM")
+        llm_client = self._openai_client_type(
+            api_key=api_key,
+            model=config.llm_openai_model,
+            base_url=config.llm_openai_base_url,
+            timeout_seconds=config.llm_openai_timeout,
+            verify=verify,
+        )
+        return LlmProviderBundle(
+            proposal_provider=LlmStepProposalProvider(
                 llm_client=llm_client,
-            )
+                language=config.llm_language,
+                temperature=config.llm_temperature,
+                max_tokens=config.llm_max_tokens,
+            ),
+            llm_client=llm_client,
+        )
 
+    def _create_google_provider(self, config: RuntimeConfig) -> LlmProviderBundle:
+        verify = self._resolve_tls_verify(config)
         api_key = os.getenv(config.llm_google_api_key_env) or os.getenv("GOOGLE_API_KEY")
         if api_key is None or not api_key.strip():
             raise ValueError(
                 "Google Gemini API key is required. Set "
                 f"'{config.llm_google_api_key_env}' or 'GOOGLE_API_KEY'."
             )
-        google_client = self._google_client_type(
+        llm_client = self._google_client_type(
             api_key=api_key,
             model=config.llm_google_model,
             base_url=config.llm_google_base_url,
@@ -157,12 +190,12 @@ class DefaultLlmProviderFactory(ILlmProviderFactory):
         )
         return LlmProviderBundle(
             proposal_provider=LlmStepProposalProvider(
-                llm_client=google_client,
+                llm_client=llm_client,
                 language=config.llm_language,
                 temperature=config.llm_temperature,
                 max_tokens=config.llm_max_tokens,
             ),
-            llm_client=google_client,
+            llm_client=llm_client,
         )
 
     @staticmethod
@@ -317,7 +350,7 @@ class DefaultRuntimeFactory(IRuntimeFactory):
 
     @staticmethod
     def _build_logged_llm_client(
-        llm_client: OpenAILlmClient | GoogleGeminiLlmClient | None,
+        llm_client: ILlmClient | None,
         audit_logger: FilesystemAuditLogger,
     ) -> ILlmClient | None:
         if llm_client is None:
@@ -365,7 +398,7 @@ def build_llm_provider(
     config: RuntimeConfig,
     *,
     factory: ILlmProviderFactory | None = None,
-) -> tuple[IStepProposalProvider | None, OpenAILlmClient | GoogleGeminiLlmClient | None]:
+) -> tuple[IStepProposalProvider | None, ILlmClient | None]:
     llm_bundle = (factory or DefaultLlmProviderFactory()).create(config)
     return llm_bundle.proposal_provider, llm_bundle.llm_client
 
@@ -373,8 +406,8 @@ def build_llm_provider(
 def resolve_planner_mode(config: RuntimeConfig) -> PlannerMode:
     if config.llm_planner_mode is not None:
         return config.llm_planner_mode
-    if config.llm_provider in ("openai", "google"):
-        return "full"
     if config.llm_provider == "file":
         return "augmented"
-    return "deterministic"
+    if config.llm_provider == "none":
+        return "deterministic"
+    return "full"

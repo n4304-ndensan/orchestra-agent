@@ -1,8 +1,8 @@
-from orchestra_agent.adapters import GoogleGeminiLlmClient, OpenAILlmClient
 from orchestra_agent.runtime_support import (
     AppRuntime,
     DefaultLlmProviderFactory,
     DefaultRuntimeFactory,
+    ILlmProviderFactory,
     IRuntimeFactory,
     LlmLanguage,
     LlmProviderName,
@@ -26,14 +26,12 @@ def build_runtime(
     return (factory or DefaultRuntimeFactory()).create(config)
 
 
-def _build_llm_provider(config: RuntimeConfig):
-    return build_llm_provider(
-        config,
-        factory=DefaultLlmProviderFactory(
-            openai_client_type=OpenAILlmClient,
-            google_client_type=GoogleGeminiLlmClient,
-        ),
-    )
+def _build_llm_provider(
+    config: RuntimeConfig,
+    *,
+    factory: ILlmProviderFactory | None = None,
+):
+    return build_llm_provider(config, factory=factory or DefaultLlmProviderFactory())
 
 
 __all__ = [

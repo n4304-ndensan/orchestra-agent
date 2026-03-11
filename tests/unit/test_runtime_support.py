@@ -9,6 +9,7 @@ from orchestra_agent.runtime import (
     describe_mcp_tools,
     resolve_mcp_endpoints,
 )
+from orchestra_agent.runtime_support.factories import resolve_planner_mode
 
 
 class _RecordingRuntimeFactory:
@@ -86,3 +87,17 @@ def test_describe_mcp_tools_falls_back_to_list_tools() -> None:
         {"name": "fs_write_text", "description": ""},
         {"name": "excel.read_sheet", "description": ""},
     ]
+
+
+def test_resolve_planner_mode_defaults_custom_provider_to_full() -> None:
+    config = RuntimeConfig(
+        workspace=Path("."),
+        snapshots_dir=Path(".orchestra_snapshots"),
+        workflow_root=Path("workflow"),
+        plan_root=Path("plan"),
+        state_root=Path(".orchestra_state/runs"),
+        audit_root=Path(".orchestra_state/audit"),
+        llm_provider="custom_provider",
+    )
+
+    assert resolve_planner_mode(config) == "full"

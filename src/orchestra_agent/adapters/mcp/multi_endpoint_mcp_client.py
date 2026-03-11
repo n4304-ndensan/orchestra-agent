@@ -27,9 +27,10 @@ class MultiEndpointMcpClient(IMcpClient):
             self._clients = {
                 endpoint: JsonRpcMcpClient(endpoint=endpoint, timeout_seconds=timeout_seconds)
                 for endpoint in endpoints
-            }
+        }
         self._tool_owners: dict[str, str] = {}
         self._described_tools_cache: list[dict[str, Any]] | None = None
+        self._last_tool_discovery_errors: dict[str, str] = {}
 
     def list_tools(self) -> list[str]:
         if self._described_tools_cache is not None:
@@ -41,7 +42,8 @@ class MultiEndpointMcpClient(IMcpClient):
             return sorted(self._tool_owners)
         tool_catalog: dict[str, dict[str, Any]] = {}
         self._tool_owners = self._discover_tool_owners(tool_catalog=tool_catalog)
-        self._described_tools_cache = [tool_catalog[name] for name in sorted(tool_catalog)]
+        if not self._last_tool_discovery_errors:
+            self._described_tools_cache = [tool_catalog[name] for name in sorted(tool_catalog)]
         return sorted(self._tool_owners)
 
     def describe_tools(self) -> list[dict[str, Any]]:
@@ -49,8 +51,10 @@ class MultiEndpointMcpClient(IMcpClient):
             return [dict(tool) for tool in self._described_tools_cache]
         tool_catalog: dict[str, dict[str, Any]] = {}
         self._tool_owners = self._discover_tool_owners(tool_catalog=tool_catalog)
-        self._described_tools_cache = [tool_catalog[name] for name in sorted(tool_catalog)]
-        return [dict(tool) for tool in self._described_tools_cache]
+        described_tools = [tool_catalog[name] for name in sorted(tool_catalog)]
+        if not self._last_tool_discovery_errors:
+            self._described_tools_cache = described_tools
+        return [dict(tool) for tool in described_tools]
 
     def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
         owner = self._tool_owners.get(tool_ref)
@@ -67,15 +71,26 @@ class MultiEndpointMcpClient(IMcpClient):
             if callable(close):
                 close()
 
+    @property
+    def last_tool_discovery_errors(self) -> dict[str, str]:
+        return dict(self._last_tool_discovery_errors)
+
     def _discover_tool_owners(
         self,
         tool_catalog: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         owners: dict[str, str] = {}
         duplicates: dict[str, list[str]] = {}
+        discovery_errors: dict[str, str] = {}
 
         for label, client in self._clients.items():
-            for tool in self._describe_client_tools(client):
+            try:
+                described_tools = self._describe_client_tools(client)
+            except Exception as exc:  # noqa: BLE001
+                discovery_errors[label] = str(exc)
+                continue
+
+            for tool in described_tools:
                 tool_name = tool["name"]
                 existing = owners.get(tool_name)
                 if existing is None:
@@ -95,6 +110,15 @@ class MultiEndpointMcpClient(IMcpClient):
                 for tool_name, labels in sorted(duplicates.items())
             )
             raise ValueError(f"Duplicate MCP tool registrations detected: {details}")
+        self._last_tool_discovery_errors = discovery_errors
+        if not owners and discovery_errors:
+            details = "; ".join(
+                f"{label}: {message}" for label, message in sorted(discovery_errors.items())
+            )
+            raise RuntimeError(
+                "MCP tool discovery failed for every configured server. "
+                f"{details}"
+            )
         return owners
 
     @staticmethod

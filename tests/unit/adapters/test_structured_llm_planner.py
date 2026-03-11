@@ -126,6 +126,54 @@ def test_structured_llm_planner_falls_back_when_response_is_invalid() -> None:
     assert "preview=not-json" in planner.last_warning
 
 
+def test_structured_llm_planner_continues_without_tool_catalog() -> None:
+    workflow = Workflow(
+        workflow_id="wf-tool-warning",
+        name="Tool discovery warning",
+        version=1,
+        objective="Find a workbook and summarize it.",
+    )
+    client = FakeLlmClient(
+        [
+            """
+            {
+              "steps": [
+                {
+                  "step_id": "locate_workbook",
+                  "name": "Locate workbook",
+                  "description": "Find the workbook in the workspace.",
+                  "tool_ref": "orchestra.llm_execute",
+                  "resolved_input": {},
+                  "depends_on": [],
+                  "risk_level": "LOW",
+                  "requires_approval": false,
+                  "run": true,
+                  "skip": false,
+                  "backup_scope": "NONE"
+                }
+              ]
+            }
+            """
+        ]
+    )
+    planner = StructuredLlmPlanner(
+        llm_client=client,
+        available_tools_supplier=lambda: ["excel.open_file"],
+        available_tool_catalog_supplier=lambda: (_ for _ in ()).throw(
+            RuntimeError("MCP endpoint request failed for tools/list: http://127.0.0.1:8010/mcp")
+        ),
+        fallback_planner=LlmPlanner(),
+    )
+
+    plan = planner.compile_step_plan(workflow)
+
+    assert [step.step_id for step in plan.steps] == ["locate_workbook"]
+    assert len(client.requests) == 1
+    assert '"available_mcp_tools": []' in client.requests[0].messages[1].content
+    assert planner.last_warning is not None
+    assert "continued without MCP tool catalog" in planner.last_warning
+
+
 def test_structured_llm_planner_accepts_ai_review_builtin_tool() -> None:
     workflow = Workflow(
         workflow_id="wf-2",

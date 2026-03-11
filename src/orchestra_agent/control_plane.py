@@ -327,9 +327,14 @@ def build_parser(config: AppConfig | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--llm-provider",
-        choices=["none", "file", "openai", "google"],
         default=defaults.llm.provider,
-        help="LLM proposal source for planner augmentation.",
+        help="LLM provider name. Built-ins: none, file, openai, google.",
+    )
+    parser.add_argument(
+        "--llm-provider-module",
+        action="append",
+        default=list(defaults.llm.provider_modules) or None,
+        help="Import path for an external LLM provider module. Repeatable.",
     )
     parser.add_argument(
         "--llm-language",
@@ -406,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 audit_root=config.resolve_within_workspace(args.audit_root, workspace),
                 mcp_endpoints=resolve_mcp_endpoints(args.mcp_endpoint, config),
                 llm_provider=args.llm_provider,
+                llm_provider_modules=tuple(args.llm_provider_module or ()),
                 llm_proposal_file=args.llm_proposal_file,
                 llm_language=args.llm_language,
                 llm_remembers_context=args.llm_remembers_context,

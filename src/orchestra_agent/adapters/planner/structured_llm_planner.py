@@ -48,8 +48,8 @@ class StructuredLlmPlanner(IPlanner):
 
     def compile_step_plan(self, workflow: Workflow) -> StepPlan:
         self.last_warning = None
+        available_mcp_tools, tool_catalog_warning = self._safe_available_mcp_tool_catalog()
         try:
-            available_mcp_tools = self._available_mcp_tool_catalog()
             request = LlmGenerateRequest(
                 messages=(
                     LlmMessage(role="system", content=self._system_prompt()),
@@ -73,7 +73,9 @@ class StructuredLlmPlanner(IPlanner):
             )
             raw = self._llm_client.generate(request)
             parsed = self._extract_json(raw)
-            return self._build_step_plan(workflow, parsed)
+            plan = self._build_step_plan(workflow, parsed)
+            self.last_warning = tool_catalog_warning
+            return plan
         except Exception as exc:  # noqa: BLE001
             if self._fallback_planner is None:
                 raise
@@ -106,6 +108,12 @@ class StructuredLlmPlanner(IPlanner):
             normalize_mcp_tool_catalog(self._available_tools_supplier()),
             key=lambda item: item["name"],
         )
+
+    def _safe_available_mcp_tool_catalog(self) -> tuple[list[dict[str, Any]], str | None]:
+        try:
+            return self._available_mcp_tool_catalog(), None
+        except Exception as exc:  # noqa: BLE001
+            return [], f"Structured LLM planner continued without MCP tool catalog: {exc}"
 
     @staticmethod
     def _workflow_attachments(workflow: Workflow) -> tuple[LlmAttachment, ...]:

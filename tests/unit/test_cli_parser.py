@@ -51,3 +51,21 @@ def test_parse_feedback_input_supports_inline_messages() -> None:
     assert _parse_feedback_input("feedback output pathを修正") == "output pathを修正"
     assert _parse_feedback_input("f write A1 instead") == "write A1 instead"
     assert _parse_feedback_input("yes") is None
+
+
+def test_build_parser_accepts_custom_llm_provider_modules() -> None:
+    parser = build_parser(AppConfig())
+
+    args = parser.parse_args(
+        [
+            "run",
+            "画像を解析してJSON化して",
+            "--llm-provider",
+            "custom_provider",
+            "--llm-provider-module",
+            "private_repo.orchestra.custom_provider",
+        ]
+    )
+
+    assert args.llm_provider == "custom_provider"
+    assert args.llm_provider_module == ["private_repo.orchestra.custom_provider"]
