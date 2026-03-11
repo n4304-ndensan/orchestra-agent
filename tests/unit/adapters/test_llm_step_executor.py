@@ -46,6 +46,14 @@ class FakeMcpClient:
         return {"tool_ref": tool_ref, "input": input}
 
 
+class FailingToolDiscoveryMcpClient(FakeMcpClient):
+    def list_tools(self) -> list[str]:
+        raise RuntimeError("MCP endpoint request failed for tools/list: http://127.0.0.1:8010/mcp")
+
+    def describe_tools(self) -> list[dict[str, str]]:
+        raise RuntimeError("MCP endpoint request failed for tools/list: http://127.0.0.1:8010/mcp")
+
+
 def test_llm_step_executor_applies_workspace_edits_and_mcp_calls() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
@@ -823,6 +831,68 @@ def test_llm_step_executor_recovers_when_model_returns_steps_payload() -> None:
         assert len(client.requests) == 2
         assert '"runtime_error"' in client.requests[1].messages[-1].content
         assert '"kind": "returned_step_plan"' in client.requests[1].messages[-1].content
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_llm_step_executor_continues_when_tool_catalog_lookup_fails() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "call_mcp_tool",
+                  "tool_ref": "excel.read_sheet",
+                  "input": {"file": "sales.xlsx", "sheet": "Sheet1"}
+                }
+                """,
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Continued with explicit allowed_mcp_tools."
+                  }
+                }
+                """,
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-tool-warning",
+            name="Tool warning",
+            version=1,
+            objective="Keep the LLM runtime active even when tool discovery fails.",
+        )
+        step = Step(
+            step_id="inspect_workbook",
+            name="Inspect workbook",
+            description="Inspect the workbook via the LLM runtime.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={"allowed_mcp_tools": ["excel.read_sheet"]},
+        )
+        mcp_client = FailingToolDiscoveryMcpClient()
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={},
+            mcp_client=mcp_client,
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Continued with explicit allowed_mcp_tools.",
+        }
+        assert mcp_client.calls == [
+            ("excel.read_sheet", {"file": "sales.xlsx", "sheet": "Sheet1"})
+        ]
+        assert len(client.requests) == 2
+        assert '"mcp_tool_catalog_warning"' in client.requests[0].messages[1].content
+        assert '"excel.read_sheet"' in client.requests[0].messages[1].content
     finally:
         shutil.rmtree(base, ignore_errors=True)
 

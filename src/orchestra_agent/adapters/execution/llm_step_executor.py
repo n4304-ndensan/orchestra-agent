@@ -105,7 +105,10 @@ class LlmStepExecutor(IStepExecutor):
         step_results: dict[str, dict[str, Any]],
         mcp_client: IMcpClient,
     ) -> dict[str, Any]:
-        available_tools = self._available_tool_catalog(mcp_client, resolved_input)
+        available_tools, tool_catalog_warning = self._available_tool_catalog(
+            mcp_client,
+            resolved_input,
+        )
         allowed_tools = {tool["name"] for tool in available_tools}
         indexed_files = self._build_workspace_file_index(resolved_input)
         attached_files = list(self._workflow_attachments(workflow, resolved_input))
@@ -121,6 +124,7 @@ class LlmStepExecutor(IStepExecutor):
                         resolved_input=resolved_input,
                         step_results=step_results,
                         available_tools=available_tools,
+                        tool_catalog_warning=tool_catalog_warning,
                         indexed_files=indexed_files,
                         attached_files=attached_files,
                         requested_paths=requested_paths,
@@ -268,6 +272,7 @@ class LlmStepExecutor(IStepExecutor):
         resolved_input: dict[str, Any],
         step_results: dict[str, dict[str, Any]],
         available_tools: list[dict[str, Any]],
+        tool_catalog_warning: str | None,
         indexed_files: list[dict[str, Any]],
         attached_files: list[LlmAttachment],
         requested_paths: list[str],
@@ -312,6 +317,7 @@ class LlmStepExecutor(IStepExecutor):
                 ),
             },
             "available_mcp_tools": available_tools,
+            "mcp_tool_catalog_warning": tool_catalog_warning,
             "workspace_root": self._workspace_root.as_posix(),
             "workspace_file_index": indexed_files,
             "attached_files": self._sanitize_for_llm(
@@ -706,8 +712,13 @@ class LlmStepExecutor(IStepExecutor):
         self,
         mcp_client: IMcpClient,
         resolved_input: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        tool_catalog = self._describe_tools(mcp_client)
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        warning: str | None = None
+        try:
+            tool_catalog = self._describe_tools(mcp_client)
+        except Exception as exc:  # noqa: BLE001
+            tool_catalog = []
+            warning = f"MCP tool catalog unavailable during step execution: {exc}"
         override = resolved_input.get("allowed_mcp_tools")
         if isinstance(override, list) and all(isinstance(item, str) for item in override):
             override_set = set(override)
@@ -715,8 +726,8 @@ class LlmStepExecutor(IStepExecutor):
             known_tools = {tool["name"] for tool in filtered_catalog}
             for tool_name in sorted(override_set - known_tools):
                 filtered_catalog.append({"name": tool_name, "description": ""})
-            return filtered_catalog
-        return tool_catalog
+            return filtered_catalog, warning
+        return tool_catalog, warning
 
     @staticmethod
     def _describe_tools(mcp_client: IMcpClient) -> list[dict[str, Any]]:

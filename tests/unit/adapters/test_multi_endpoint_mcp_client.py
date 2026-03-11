@@ -38,6 +38,20 @@ class StubMcpClient:
         return self._result_by_tool[tool_ref]
 
 
+class FailingDescribeMcpClient:
+    def __init__(self, message: str) -> None:
+        self._message = message
+
+    def list_tools(self) -> list[str]:
+        raise RuntimeError(self._message)
+
+    def describe_tools(self) -> list[dict[str, str]]:
+        raise RuntimeError(self._message)
+
+    def call_tool(self, tool_ref: str, input: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError(self._message)
+
+
 def test_multi_endpoint_client_merges_and_routes_tools() -> None:
     files_client = StubMcpClient(
         tools=["fs_list_entries"],
@@ -103,3 +117,36 @@ def test_multi_endpoint_client_caches_describe_tools_results() -> None:
     assert client.list_tools() == ["excel.open_file", "fs_list_entries"]
     assert files_client.describe_calls == 1
     assert excel_client.describe_calls == 1
+
+
+def test_multi_endpoint_client_returns_partial_tool_catalog_when_one_server_fails() -> None:
+    client = MultiEndpointMcpClient(
+        clients={
+            "files": FailingDescribeMcpClient("MCP endpoint request failed for tools/list: files"),
+            "excel": StubMcpClient(
+                tools=["excel.open_file"],
+                result_by_tool={"excel.open_file": {"sheets": ["Sheet1"]}},
+                descriptions={"excel.open_file": "Open workbook"},
+            ),
+        }
+    )
+
+    assert client.describe_tools() == [
+        {"name": "excel.open_file", "description": "Open workbook", "server": "excel"},
+    ]
+    assert client.list_tools() == ["excel.open_file"]
+    assert client.last_tool_discovery_errors == {
+        "files": "MCP endpoint request failed for tools/list: files"
+    }
+
+
+def test_multi_endpoint_client_raises_when_every_server_fails() -> None:
+    client = MultiEndpointMcpClient(
+        clients={
+            "files": FailingDescribeMcpClient("files down"),
+            "excel": FailingDescribeMcpClient("excel down"),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="every configured server"):
+        client.describe_tools()
