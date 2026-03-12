@@ -1,0 +1,64 @@
+[server]
+name = "file-workspace-mcp"
+
+[policies]
+destructive_requires_preview = true
+commit_requires_validation = true
+auto_backup = true
+delete_enabled = false
+allow_remote_overwrite = false
+
+[limits]
+max_text_read_chars = 200000
+max_document_extract_chars = 100000
+max_inline_write_chars = 500000
+max_file_size_mb_local = 100
+max_file_size_mb_remote_roundtrip = 50
+max_search_results = 100
+max_children_list = 1000
+idle_timeout_sec = 1800
+hard_timeout_sec = 7200
+
+[logging]
+audit_file = "/workspace/.orchestra_state/audit/file_workspace_mcp.jsonl"
+
+[[sources]]
+source_id = "local_workspace"
+source_type = "local_workspace"
+display_name = "Local Workspace"
+enabled = true
+read_only = false
+workspace_root = "/workspace"
+search_mode = "path_prefix_walk"
+write_mode = "local_native"
+allowed_extensions = [".txt", ".md", ".json", ".yaml", ".yml", ".toml", ".csv", ".py", ".ts", ".tsx", ".cs", ".vb"]
+denied_extensions = [".pem", ".pfx", ".key", ".ppk", ".kdbx"]
+temp_root = "/workspace/.file_mcp_tmp"
+backup_dir = "/workspace/.file_mcp_backups"
+
+[[sources]]
+source_id = "sp_team_docs"
+source_type = "sharepoint_drive"
+display_name = "Team SharePoint Docs"
+enabled = true
+read_only = false
+site_url = "https://contoso.sharepoint.com/sites/TeamA"
+library_name = "Shared Documents"
+auth_profile = "graph_app_selected"
+search_mode = "manifest_only"
+write_mode = "remote_roundtrip"
+allowed_extensions = [".txt", ".md", ".pdf", ".docx", ".json", ".yaml"]
+
+[[auth_profiles]]
+auth_profile_id = "graph_app_selected"
+auth_mode = "client_credentials"
+tenant_id = "${GRAPH_TENANT_ID}"
+client_id = "${GRAPH_CLIENT_ID}"
+client_secret_env_var = "GRAPH_CLIENT_SECRET"
+
+[[aliases]]
+alias = "team_specs"
+source_id = "sp_team_docs"
+base_folder_path = "/Architecture/Specs"
+read_only = false
+tags = ["spec", "design"]

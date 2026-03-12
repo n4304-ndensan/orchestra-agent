@@ -15,6 +15,15 @@ services:
       ORCHESTRA_MCP_CONFIG: /workspace/project/orchestra-agent.toml
       ORCHESTRA_MCP_WORKSPACE: /workspace/workspace
       ORCHESTRA_MCP_LOG_LEVEL: ${ORCHESTRA_MCP_LOG_LEVEL:-INFO}
+      WORKSPACE_ROOT: /workspace/workspace
+      FILE_MCP_CONFIG: /workspace/project/docker/mcp-files-server/config.example.toml
+      FILE_MCP_REMOTE_ENABLED: ${FILE_MCP_REMOTE_ENABLED:-false}
+      FILE_MCP_AUDIT_DIR: /workspace/workspace/.orchestra_state/audit
+      FILE_MCP_BACKUP_DIR: /workspace/workspace/.file_mcp_backups
+      GRAPH_TENANT_ID: ${GRAPH_TENANT_ID:-}
+      GRAPH_CLIENT_ID: ${GRAPH_CLIENT_ID:-}
+      GRAPH_CLIENT_SECRET: ${GRAPH_CLIENT_SECRET:-}
+      GRAPH_AUTH_MODE: ${GRAPH_AUTH_MODE:-client_credentials}
     ports:
       - "${ORCHESTRA_PUBLISH_HOST:-127.0.0.1}:${ORCHESTRA_MCP_FILES_PORT:-8010}:8010"
     restart: unless-stopped

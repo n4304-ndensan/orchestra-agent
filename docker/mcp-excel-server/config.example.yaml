@@ -1,0 +1,63 @@
+server:
+  name: excel-workspace-mcp
+
+sources:
+  - source_id: local_workspace
+    source_type: local_workspace
+    display_name: Local Workspace
+    enabled: true
+    read_only: false
+    default_mode: local_workspace
+    workspace_root: /workspace/workspace
+    allowed_extensions:
+      - .xlsx
+      - .xlsm
+    max_file_size_mb: 100
+    temp_root: /workspace/workspace/.excel_mcp_tmp
+    backup_dir: /workspace/workspace/.excel_mcp_backups
+  - source_id: sharepoint_roundtrip
+    source_type: sharepoint_graph_roundtrip
+    display_name: SharePoint Round-trip
+    enabled: false
+    read_only: false
+    default_mode: sharepoint_graph_roundtrip
+    site_url: https://contoso.sharepoint.com/sites/example
+    library_name: Documents
+    auth_profile: graph_app
+    allowed_extensions:
+      - .xlsx
+    max_file_size_mb: 50
+    temp_root: /workspace/workspace/.excel_mcp_tmp
+    backup_dir: /workspace/workspace/.excel_mcp_backups
+
+policies:
+  destructive_requires_preview: true
+  commit_requires_validation: true
+  allow_delete_sheet: false
+  allow_formula_write: true
+  allow_remote_overwrite: false
+  default_remote_mode: sharepoint_graph_roundtrip
+  selected_scope_required: true
+  backup_retention_days: 30
+
+limits:
+  read_range_max_cells: 20000
+  read_table_max_rows: 10000
+  search_result_limit: 100
+  max_cells_per_update: 5000
+  max_rows_per_append: 2000
+  idle_timeout_sec: 1800
+  hard_timeout_sec: 7200
+  local_max_file_size_mb: 100
+  remote_roundtrip_max_file_size_mb: 50
+  remote_workbook_max_file_size_mb: 25
+
+logging:
+  audit_file: /workspace/workspace/.orchestra_state/audit/excel_workspace_mcp.jsonl
+
+auth_profiles:
+  - auth_profile_id: graph_app
+    auth_mode: client_credentials
+    tenant_id: ${GRAPH_TENANT_ID}
+    client_id: ${GRAPH_CLIENT_ID}
+    client_secret_env_var: GRAPH_CLIENT_SECRET

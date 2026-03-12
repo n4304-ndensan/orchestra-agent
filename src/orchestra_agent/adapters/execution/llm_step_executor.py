@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,24 @@ from orchestra_agent.shared.llm_step_runtime_protocol import (
     WriteFileAction,
     parse_runtime_action,
 )
-from orchestra_agent.shared.mcp_tool_catalog import normalize_mcp_tool_catalog
 from orchestra_agent.shared.tool_input_normalization import normalize_tool_input
+from .llm_step_executor_support import (
+    McpToolCatalogResolver,
+    WorkspaceFileInventory,
+    WorkspacePathManager,
+)
+
+
+@dataclass(slots=True)
+class _ExecutionState:
+    indexed_files: list[dict[str, Any]]
+    attached_files: list[LlmAttachment]
+    requested_paths: list[str]
+    messages: list[LlmMessage]
+    written_files: list[str] = field(default_factory=list)
+    mcp_results: list[dict[str, Any]] = field(default_factory=list)
+    last_mcp_result: dict[str, Any] | None = None
+    last_error: Exception | None = None
 
 
 class LlmStepExecutor(IStepExecutor):
@@ -94,8 +111,19 @@ class LlmStepExecutor(IStepExecutor):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_agent_turns = max_agent_turns
-        self._max_workspace_files = max_workspace_files
         self._audit_logger = audit_logger
+        self._workspace_paths = WorkspacePathManager(
+            workspace_root=self._workspace_root,
+            path_value_keys=self._path_value_keys,
+            path_list_keys=self._path_list_keys,
+        )
+        self._tool_catalog_resolver = McpToolCatalogResolver()
+        self._workspace_inventory = WorkspaceFileInventory(
+            workspace_root=self._workspace_root,
+            max_files=max_workspace_files,
+            ignored_dirs=self._ignored_dirs,
+            path_resolver=self._workspace_paths.resolve_workspace_path,
+        )
 
     def execute(
         self,
@@ -105,13 +133,89 @@ class LlmStepExecutor(IStepExecutor):
         step_results: dict[str, dict[str, Any]],
         mcp_client: IMcpClient,
     ) -> dict[str, Any]:
-        available_tools, tool_catalog_warning = self._available_tool_catalog(
+        available_tools, tool_catalog_warning = self._tool_catalog_resolver.resolve(
             mcp_client,
             resolved_input,
         )
         allowed_tools = {tool["name"] for tool in available_tools}
-        indexed_files = self._build_workspace_file_index(resolved_input)
-        attached_files = list(self._workflow_attachments(workflow, resolved_input))
+        state = self._initialize_execution_state(
+            workflow=workflow,
+            step=step,
+            resolved_input=resolved_input,
+            step_results=step_results,
+            available_tools=available_tools,
+            tool_catalog_warning=tool_catalog_warning,
+        )
+
+        for turn_index in range(self._max_agent_turns):
+            request = LlmGenerateRequest(
+                messages=self._request_messages(state.messages, turn_index=turn_index),
+                response_format="json_object",
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+            )
+            raw = self._llm_client.generate(request)
+            parsed: Any | None = None
+            try:
+                parsed = self._extract_json(raw)
+                state.messages.append(
+                    LlmMessage(role="assistant", content=self._json_text(parsed))
+                )
+                if self._is_legacy_action_payload(parsed):
+                    result = self._handle_legacy_payload(
+                        parsed=parsed,
+                        workflow=workflow,
+                        step=step,
+                        resolved_input=resolved_input,
+                        state=state,
+                        mcp_client=mcp_client,
+                        allowed_tools=allowed_tools,
+                    )
+                    if result is None:
+                        continue
+                    return result
+
+                action = parse_runtime_action(parsed)
+                result = self._apply_runtime_action(
+                    action=action,
+                    workflow=workflow,
+                    step=step,
+                    resolved_input=resolved_input,
+                    state=state,
+                    mcp_client=mcp_client,
+                    allowed_tools=allowed_tools,
+                )
+                if result is not None:
+                    return result
+            except Exception as exc:  # noqa: BLE001
+                self._handle_runtime_failure(
+                    exc,
+                    raw_response=raw,
+                    parsed=parsed,
+                    state=state,
+                )
+                continue
+
+        if state.last_error is not None:
+            reason = text_preview(clean_exception_message(state.last_error))
+            raise RuntimeError(
+                "LLM step executor exceeded the maximum execution rounds after runtime corrections. "
+                f"Last error: {reason}"
+            ) from state.last_error
+        raise RuntimeError("LLM step executor exceeded the maximum execution rounds.")
+
+    def _initialize_execution_state(
+        self,
+        *,
+        workflow: Workflow,
+        step: Step,
+        resolved_input: dict[str, Any],
+        step_results: dict[str, dict[str, Any]],
+        available_tools: list[dict[str, Any]],
+        tool_catalog_warning: str | None,
+    ) -> _ExecutionState:
+        indexed_files = self._refresh_workspace_index(resolved_input)
+        attached_files = list(self._workspace_paths.workflow_attachments(workflow, resolved_input))
         requested_paths: list[str] = []
         messages = [
             LlmMessage(role="system", content=self._system_prompt()),
@@ -133,137 +237,147 @@ class LlmStepExecutor(IStepExecutor):
                 attachments=tuple(attached_files),
             ),
         ]
-        written_files: list[str] = []
-        mcp_results: list[dict[str, Any]] = []
-        last_mcp_result: dict[str, Any] | None = None
-        last_error: Exception | None = None
+        return _ExecutionState(
+            indexed_files=indexed_files,
+            attached_files=attached_files,
+            requested_paths=requested_paths,
+            messages=messages,
+        )
 
-        for turn_index in range(self._max_agent_turns):
-            request = LlmGenerateRequest(
-                messages=self._request_messages(messages, turn_index=turn_index),
-                response_format="json_object",
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
+    def _handle_legacy_payload(
+        self,
+        *,
+        parsed: Any,
+        workflow: Workflow,
+        step: Step,
+        resolved_input: dict[str, Any],
+        state: _ExecutionState,
+        mcp_client: IMcpClient,
+        allowed_tools: set[str],
+    ) -> dict[str, Any] | None:
+        if self._handle_attachment_payload(
+            parsed=parsed,
+            workflow=workflow,
+            step=step,
+            resolved_input=resolved_input,
+            state=state,
+        ):
+            return None
+        return self._apply_actions(parsed, mcp_client, allowed_tools)
+
+    def _apply_runtime_action(
+        self,
+        *,
+        action: RequestFileAttachmentsAction | FinishAction | CallMcpToolAction | WriteFileAction,
+        workflow: Workflow,
+        step: Step,
+        resolved_input: dict[str, Any],
+        state: _ExecutionState,
+        mcp_client: IMcpClient,
+        allowed_tools: set[str],
+    ) -> dict[str, Any] | None:
+        if isinstance(action, RequestFileAttachmentsAction):
+            self._apply_attachment_request(
+                workflow=workflow,
+                step=step,
+                resolved_input=resolved_input,
+                request_actions=[
+                    {
+                        "paths": action.paths,
+                        **(
+                            {"reason": action.reason}
+                            if isinstance(action.reason, str)
+                            else {}
+                        ),
+                        **action.extensions,
+                    }
+                ],
+                state=state,
             )
-            raw = self._llm_client.generate(request)
-            parsed: Any | None = None
-            try:
-                parsed = self._extract_json(raw)
-                messages.append(
-                    LlmMessage(role="assistant", content=self._json_text(parsed))
-                )
-                if self._is_legacy_action_payload(parsed):
-                    if self._handle_attachment_payload(
-                        parsed=parsed,
-                        workflow=workflow,
-                        step=step,
-                        indexed_files=indexed_files,
-                        attached_files=attached_files,
-                        requested_paths=requested_paths,
-                        messages=messages,
-                    ):
-                        continue
-                    return self._apply_actions(parsed, mcp_client, allowed_tools)
-
-                action = parse_runtime_action(parsed)
-
-                if isinstance(action, RequestFileAttachmentsAction):
-                    self._apply_attachment_request(
-                        workflow=workflow,
-                        step=step,
-                        request_actions=[
+            return None
+        if isinstance(action, FinishAction):
+            return self._build_execution_result(
+                explicit_result=action.result,
+                last_mcp_result=state.last_mcp_result,
+                written_files=state.written_files,
+                mcp_results=state.mcp_results,
+            )
+        if isinstance(action, CallMcpToolAction):
+            tool_ref, normalized_input = self._prepare_mcp_tool_call(
+                {
+                    "tool_ref": action.tool_ref,
+                    "input": action.input,
+                },
+                allowed_tools,
+            )
+            result = self._call_mcp_tool(
+                tool_ref=tool_ref,
+                normalized_input=normalized_input,
+                mcp_client=mcp_client,
+            )
+            state.last_mcp_result = result
+            state.mcp_results.append(result)
+            state.messages.append(
+                LlmMessage(
+                    role="user",
+                    content=self._json_text(
+                        self._sanitize_for_llm(
                             {
-                                "paths": action.paths,
-                                **(
-                                    {"reason": action.reason}
-                                    if isinstance(action.reason, str)
-                                    else {}
-                                ),
-                                **action.extensions,
+                                "tool_result": {
+                                    "tool_ref": tool_ref,
+                                    "input": normalized_input,
+                                    "result": result,
+                                }
                             }
-                        ],
-                        indexed_files=indexed_files,
-                        attached_files=attached_files,
-                        requested_paths=requested_paths,
-                        messages=messages,
-                    )
-                    continue
-                if isinstance(action, FinishAction):
-                    return self._build_execution_result(
-                        explicit_result=action.result,
-                        last_mcp_result=last_mcp_result,
-                        written_files=written_files,
-                        mcp_results=mcp_results,
-                    )
-                if isinstance(action, CallMcpToolAction):
-                    tool_ref, normalized_input = self._prepare_mcp_tool_call(
-                        {
-                            "tool_ref": action.tool_ref,
-                            "input": action.input,
-                        },
-                        allowed_tools,
-                    )
-                    result = mcp_client.call_tool(tool_ref, normalized_input)
-                    last_mcp_result = result
-                    mcp_results.append(result)
-                    messages.append(
-                        LlmMessage(
-                            role="user",
-                            content=self._json_text(
-                                self._sanitize_for_llm(
-                                    {
-                                        "tool_result": {
-                                            "tool_ref": tool_ref,
-                                            "input": normalized_input,
-                                            "result": result,
-                                        }
-                                    }
-                                )
-                            ),
                         )
-                    )
-                    continue
-                if isinstance(action, WriteFileAction):
-                    written_path = self._write_file(
-                        {
-                            "path": action.path,
-                            "content": action.content,
-                        }
-                    )
-                    written_files.append(written_path)
-                    messages.append(
-                        LlmMessage(
-                            role="user",
-                            content=self._json_text(
-                                self._sanitize_for_llm(
-                                    {
-                                        "write_file_result": {
-                                            "path": written_path,
-                                        }
-                                    }
-                                )
-                            ),
-                        )
-                    )
-                    continue
-                raise ValueError(f"Unsupported LLM action type: {action.type}")
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                messages.append(
-                    LlmMessage(
-                        role="user",
-                        content=self._runtime_error_message(exc, raw_response=raw, parsed=parsed),
-                    )
+                    ),
                 )
-                continue
+            )
+            return None
+        if isinstance(action, WriteFileAction):
+            written_path = self._write_file(
+                {
+                    "path": action.path,
+                    "content": action.content,
+                }
+            )
+            state.written_files.append(written_path)
+            state.messages.append(
+                LlmMessage(
+                    role="user",
+                    content=self._json_text(
+                        self._sanitize_for_llm(
+                            {
+                                "write_file_result": {
+                                    "path": written_path,
+                                }
+                            }
+                        )
+                    ),
+                )
+            )
+            return None
+        raise ValueError(f"Unsupported LLM action type: {action.type}")
 
-        if last_error is not None:
-            reason = text_preview(clean_exception_message(last_error))
-            raise RuntimeError(
-                "LLM step executor exceeded the maximum execution rounds after runtime corrections. "
-                f"Last error: {reason}"
-            ) from last_error
-        raise RuntimeError("LLM step executor exceeded the maximum execution rounds.")
+    def _handle_runtime_failure(
+        self,
+        exc: Exception,
+        *,
+        raw_response: str,
+        parsed: Any,
+        state: _ExecutionState,
+    ) -> None:
+        state.last_error = exc
+        state.messages.append(
+            LlmMessage(
+                role="user",
+                content=self._runtime_error_message(
+                    exc,
+                    raw_response=raw_response,
+                    parsed=parsed,
+                ),
+            )
+        )
 
     def _build_payload(
         self,
@@ -469,7 +583,12 @@ class LlmStepExecutor(IStepExecutor):
 
         action_type = raw_action.get("type")
         if action_type == "call_mcp_tool":
-            result = self._call_mcp_tool(raw_action, mcp_client, allowed_tools)
+            tool_ref, normalized_input = self._prepare_mcp_tool_call(raw_action, allowed_tools)
+            result = self._call_mcp_tool(
+                tool_ref=tool_ref,
+                normalized_input=normalized_input,
+                mcp_client=mcp_client,
+            )
             mcp_results.append(result)
             return explicit_result, result
         if action_type == "write_file":
@@ -508,10 +627,8 @@ class LlmStepExecutor(IStepExecutor):
         parsed: Any,
         workflow: Workflow,
         step: Step,
-        indexed_files: list[dict[str, Any]],
-        attached_files: list[LlmAttachment],
-        requested_paths: list[str],
-        messages: list[LlmMessage],
+        resolved_input: dict[str, Any],
+        state: _ExecutionState,
     ) -> bool:
         request_actions = self._request_actions_from_payload(parsed)
         if not request_actions:
@@ -519,11 +636,9 @@ class LlmStepExecutor(IStepExecutor):
         self._apply_attachment_request(
             workflow=workflow,
             step=step,
+            resolved_input=resolved_input,
             request_actions=request_actions,
-            indexed_files=indexed_files,
-            attached_files=attached_files,
-            requested_paths=requested_paths,
-            messages=messages,
+            state=state,
         )
         return True
 
@@ -532,21 +647,20 @@ class LlmStepExecutor(IStepExecutor):
         *,
         workflow: Workflow,
         step: Step,
+        resolved_input: dict[str, Any],
         request_actions: list[dict[str, Any]],
-        indexed_files: list[dict[str, Any]],
-        attached_files: list[LlmAttachment],
-        requested_paths: list[str],
-        messages: list[LlmMessage],
+        state: _ExecutionState,
     ) -> None:
-        prior_attachment_count = len(attached_files)
-        requested = self._append_requested_attachments(
+        state.indexed_files = self._refresh_workspace_index(resolved_input)
+        prior_attachment_count = len(state.attached_files)
+        requested = self._workspace_paths.append_requested_attachments(
             request_actions=request_actions,
             indexed_paths={
                 entry["path"]
-                for entry in indexed_files
+                for entry in state.indexed_files
                 if isinstance(entry, dict) and isinstance(entry.get("path"), str)
             },
-            attached_files=attached_files,
+            attached_files=state.attached_files,
         )
         if not requested:
             raise ValueError("LLM requested file attachments but no new files were added.")
@@ -558,8 +672,8 @@ class LlmStepExecutor(IStepExecutor):
                 "paths": requested,
             }
         )
-        requested_paths.extend(requested)
-        messages.append(
+        state.requested_paths.extend(requested)
+        state.messages.append(
             LlmMessage(
                 role="user",
                 content=self._json_text(
@@ -568,13 +682,13 @@ class LlmStepExecutor(IStepExecutor):
                             "attachment_request_result": {
                                 "attached_paths": requested,
                                 "all_attached_files": [
-                                    attachment.path for attachment in attached_files
+                                    attachment.path for attachment in state.attached_files
                                 ],
                             }
                         }
                     )
                 ),
-                attachments=tuple(attached_files[prior_attachment_count:]),
+                attachments=tuple(state.attached_files[prior_attachment_count:]),
             )
         )
 
@@ -593,17 +707,16 @@ class LlmStepExecutor(IStepExecutor):
             raise ValueError("call_mcp_tool requires object 'input'.")
         return tool_ref, normalize_tool_input(tool_ref, tool_input)
 
-    @staticmethod
     def _call_mcp_tool(
-        raw_action: dict[str, Any],
+        self,
+        *,
+        tool_ref: str,
+        normalized_input: dict[str, Any],
         mcp_client: IMcpClient,
-        allowed_tools: set[str],
     ) -> dict[str, Any]:
-        tool_ref, normalized_input = LlmStepExecutor._prepare_mcp_tool_call(
-            raw_action,
-            allowed_tools,
-        )
-        return mcp_client.call_tool(tool_ref, normalized_input)
+        result = mcp_client.call_tool(tool_ref, normalized_input)
+        self._workspace_inventory.invalidate()
+        return result
 
     def _write_file(self, raw_action: dict[str, Any]) -> str:
         path = raw_action.get("path")
@@ -612,7 +725,7 @@ class LlmStepExecutor(IStepExecutor):
             raise ValueError("write_file requires string 'path'.")
         if not isinstance(content, str):
             raise ValueError("write_file requires string 'content'.")
-        target = self._resolve_workspace_path(path)
+        target = self._workspace_paths.resolve_workspace_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         self._record_event(
@@ -623,16 +736,11 @@ class LlmStepExecutor(IStepExecutor):
                 "source": "llm_step_executor",
             }
         )
+        self._workspace_inventory.invalidate()
         return str(target)
 
-    def _resolve_workspace_path(self, raw_path: str) -> Path:
-        candidate = Path(raw_path)
-        if not candidate.is_absolute():
-            candidate = self._workspace_root / candidate
-        resolved = candidate.resolve()
-        if not resolved.is_relative_to(self._workspace_root):
-            raise ValueError(f"Workspace sandbox rejected path outside workspace: {raw_path}")
-        return resolved
+    def _refresh_workspace_index(self, resolved_input: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._workspace_inventory.snapshot(resolved_input).files_for_prompt()
 
     def _record_event(self, event: dict[str, Any]) -> None:
         if self._audit_logger is None:
@@ -647,34 +755,7 @@ class LlmStepExecutor(IStepExecutor):
         return step.description
 
     def _sanitize_for_llm(self, value: Any, *, key: str | None = None) -> Any:
-        if isinstance(value, dict):
-            return {
-                item_key: self._sanitize_for_llm(item_value, key=item_key)
-                for item_key, item_value in value.items()
-            }
-        if isinstance(value, list):
-            return [self._sanitize_for_llm(item, key=key) for item in value]
-        if isinstance(value, str):
-            return self._sanitize_string_for_llm(value, key=key)
-        return value
-
-    def _sanitize_string_for_llm(self, value: str, *, key: str | None = None) -> str:
-        if key in self._path_list_keys:
-            return self._display_path_for_llm(value)
-        if key in self._path_value_keys:
-            return self._display_path_for_llm(value)
-        return value
-
-    def _display_path_for_llm(self, raw_path: str) -> str:
-        candidate = Path(raw_path)
-        if candidate.is_absolute():
-            resolved = candidate.resolve()
-            if resolved.is_relative_to(self._workspace_root):
-                return resolved.relative_to(self._workspace_root).as_posix()
-            return resolved.as_posix()
-        if "\\" in raw_path:
-            return raw_path.replace("\\", "/")
-        return raw_path
+        return self._workspace_paths.sanitize_for_llm(value, key=key)
 
     @staticmethod
     def _json_text(payload: Any) -> str:
@@ -707,122 +788,6 @@ class LlmStepExecutor(IStepExecutor):
             "written_files": written_files,
             "mcp_results": mcp_results,
         }
-
-    def _available_tool_catalog(
-        self,
-        mcp_client: IMcpClient,
-        resolved_input: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        warning: str | None = None
-        try:
-            tool_catalog = self._describe_tools(mcp_client)
-        except Exception as exc:  # noqa: BLE001
-            tool_catalog = []
-            warning = f"MCP tool catalog unavailable during step execution: {exc}"
-        override = resolved_input.get("allowed_mcp_tools")
-        if isinstance(override, list) and all(isinstance(item, str) for item in override):
-            override_set = set(override)
-            filtered_catalog = [tool for tool in tool_catalog if tool["name"] in override_set]
-            known_tools = {tool["name"] for tool in filtered_catalog}
-            for tool_name in sorted(override_set - known_tools):
-                filtered_catalog.append({"name": tool_name, "description": ""})
-            return filtered_catalog, warning
-        return tool_catalog, warning
-
-    @staticmethod
-    def _describe_tools(mcp_client: IMcpClient) -> list[dict[str, Any]]:
-        describe_tools = getattr(mcp_client, "describe_tools", None)
-        if callable(describe_tools):
-            described_tools = normalize_mcp_tool_catalog(describe_tools())
-            if described_tools:
-                return sorted(described_tools, key=lambda item: item["name"])
-
-        return sorted(
-            normalize_mcp_tool_catalog(mcp_client.list_tools()),
-            key=lambda item: item["name"],
-        )
-
-    def _workflow_attachments(
-        self,
-        workflow: Workflow,
-        resolved_input: dict[str, Any],
-    ) -> tuple[LlmAttachment, ...]:
-        raw_files = [*workflow.reference_files]
-        extra_files = resolved_input.get("llm_reference_files")
-        if isinstance(extra_files, list) and all(isinstance(item, str) for item in extra_files):
-            raw_files.extend(extra_files)
-
-        seen: set[str] = set()
-        attachments: list[LlmAttachment] = []
-        for raw_file in raw_files:
-            resolved = self._resolve_attachment_path(raw_file)
-            normalized = str(resolved)
-            if normalized in seen:
-                continue
-            seen.add(normalized)
-            attachments.append(LlmAttachment(path=normalized))
-        return tuple(attachments)
-
-    def _build_workspace_file_index(self, resolved_input: dict[str, Any]) -> list[dict[str, Any]]:
-        roots = self._discovery_roots(resolved_input)
-        indexed_files: list[dict[str, Any]] = []
-        seen: set[str] = set()
-
-        for root in roots:
-            for file_path in root.rglob("*"):
-                if len(indexed_files) >= self._max_workspace_files:
-                    return indexed_files
-                if file_path.is_dir():
-                    continue
-                if self._should_ignore(file_path):
-                    continue
-                resolved = file_path.resolve()
-                normalized = str(resolved)
-                if normalized in seen:
-                    continue
-                seen.add(normalized)
-                indexed_files.append(
-                    {
-                        "path": str(resolved.relative_to(self._workspace_root).as_posix()),
-                        "size": resolved.stat().st_size,
-                    }
-                )
-        return indexed_files
-
-    def _discovery_roots(self, resolved_input: dict[str, Any]) -> list[Path]:
-        raw_roots = resolved_input.get("llm_file_discovery_roots")
-        if isinstance(raw_roots, list) and all(isinstance(item, str) for item in raw_roots):
-            return [self._resolve_workspace_path(item) for item in raw_roots]
-        return [self._workspace_root]
-
-    def _should_ignore(self, file_path: Path) -> bool:
-        relative_parts = file_path.relative_to(self._workspace_root).parts
-        return any(part in self._ignored_dirs for part in relative_parts[:-1])
-
-    def _consume_attachment_request(
-        self,
-        parsed: Any,
-        indexed_files: list[dict[str, Any]],
-        attached_files: list[LlmAttachment],
-    ) -> list[str]:
-        request_actions = self._request_actions_from_payload(parsed)
-        if not request_actions:
-            return []
-
-        indexed_paths = {
-            entry["path"]
-            for entry in indexed_files
-            if isinstance(entry, dict) and isinstance(entry.get("path"), str)
-        }
-        newly_requested = self._append_requested_attachments(
-            request_actions=request_actions,
-            indexed_paths=indexed_paths,
-            attached_files=attached_files,
-        )
-
-        if not newly_requested:
-            raise ValueError("LLM requested file attachments but no new files were added.")
-        return newly_requested
 
     @classmethod
     def _request_actions_from_payload(cls, parsed: Any) -> list[dict[str, Any]]:
@@ -858,51 +823,3 @@ class LlmStepExecutor(IStepExecutor):
                 )
             return []
         return request_actions
-
-    def _append_requested_attachments(
-        self,
-        request_actions: list[dict[str, Any]],
-        indexed_paths: set[str],
-        attached_files: list[LlmAttachment],
-    ) -> list[str]:
-        existing_paths = {attachment.path for attachment in attached_files}
-        newly_requested: list[str] = []
-
-        for action in request_actions:
-            paths = action.get("paths", [])
-            if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):
-                raise ValueError("request_file_attachments requires a string array 'paths'.")
-            for raw_path in paths:
-                normalized_path = raw_path.replace("\\", "/")
-                self._validate_requested_path(normalized_path, raw_path, indexed_paths)
-                resolved = self._resolve_attachment_path(normalized_path)
-                attachment_path = str(resolved)
-                if attachment_path in existing_paths:
-                    continue
-                existing_paths.add(attachment_path)
-                attached_files.append(LlmAttachment(path=attachment_path))
-                newly_requested.append(normalized_path)
-
-        return newly_requested
-
-    @staticmethod
-    def _validate_requested_path(
-        normalized_path: str,
-        raw_path: str,
-        indexed_paths: set[str],
-    ) -> None:
-        if normalized_path in indexed_paths:
-            return
-        raise ValueError(
-            f"Requested attachment '{raw_path}' is not available in workspace_file_index."
-        )
-
-    def _resolve_attachment_path(self, raw_path: str) -> Path:
-        candidate = Path(raw_path)
-        if candidate.is_absolute() or candidate.exists():
-            resolved = candidate.resolve()
-        else:
-            resolved = (self._workspace_root / candidate).resolve()
-        if not resolved.is_file():
-            raise FileNotFoundError(f"LLM attachment '{resolved}' was not found.")
-        return resolved
