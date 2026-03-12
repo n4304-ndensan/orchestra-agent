@@ -508,6 +508,76 @@ def test_llm_step_executor_supports_ai_review_steps() -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def test_llm_step_executor_includes_workflow_constraints_and_step_contract_in_prompt() -> None:
+    base = Path(".tmp-tests") / uuid4().hex
+    base.mkdir(parents=True, exist_ok=False)
+    try:
+        client = FakeLlmClient(
+            [
+                """
+                {
+                  "type": "finish",
+                  "result": {
+                    "status": "ok",
+                    "summary": "Used the full execution payload."
+                  }
+                }
+                """
+            ]
+        )
+        executor = LlmStepExecutor(client, workspace_root=base)
+        workflow = Workflow(
+            workflow_id="wf-contract",
+            name="Execution contract",
+            version=3,
+            objective="Create the requested summary artifact.",
+            constraints=["Do not overwrite the original workbook."],
+            success_criteria=["Create reports/summary.txt inside the workspace."],
+            feedback_history=["Prefer concise output."],
+        )
+        step = Step(
+            step_id="create_summary",
+            name="Create summary",
+            description="Create the summary artifact from the prepared findings.",
+            tool_ref="orchestra.llm_execute",
+            resolved_input={
+                "target_files": ["reports/summary.txt"],
+                "prior_step_result_requirements": ["prepared_findings"],
+            },
+            depends_on=["prepared_findings"],
+            risk_level=RiskLevel.MEDIUM,
+            requires_approval=True,
+            backup_scope=BackupScope.WORKSPACE,
+        )
+
+        result = executor.execute(
+            workflow=workflow,
+            step=step,
+            resolved_input=step.resolved_input,
+            step_results={"prepared_findings": {"summary": "Draft findings are ready."}},
+            mcp_client=FakeMcpClient(),
+        )
+
+        assert result == {
+            "status": "ok",
+            "summary": "Used the full execution payload.",
+        }
+        system_prompt = client.requests[0].messages[0].content
+        request_body = client.requests[0].messages[1].content
+        assert "Work on the current step only. Do not re-plan the workflow." in system_prompt
+        assert "Use write_file only for UTF-8 text files inside workspace_root." in system_prompt
+        assert '"constraints": [' in request_body
+        assert '"Do not overwrite the original workbook."' in request_body
+        assert '"success_criteria": [' in request_body
+        assert '"Create reports/summary.txt inside the workspace."' in request_body
+        assert '"depends_on": [' in request_body
+        assert '"risk_level": "MEDIUM"' in request_body
+        assert '"requires_approval": true' in request_body
+        assert '"backup_scope": "WORKSPACE"' in request_body
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def test_llm_step_executor_includes_previous_step_results_in_next_step_prompt() -> None:
     base = Path(".tmp-tests") / uuid4().hex
     base.mkdir(parents=True, exist_ok=False)
