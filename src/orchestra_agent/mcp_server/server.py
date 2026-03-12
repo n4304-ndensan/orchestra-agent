@@ -21,7 +21,7 @@ def create_mcp_server(
     except ImportError as exc:
         raise ImportError(
             "Missing dependency 'mcp'. Install optional extras with "
-            "`pip install \"orchestra-agent[mcp-server]\"`."
+            '`pip install "orchestra-agent[mcp-server]"`.'
         ) from exc
 
     workspace = Path(workspace_root)
@@ -78,7 +78,343 @@ def run_jsonrpc_server(
 
 def _register_file_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
     _register_server_ping(mcp)
+    _register_file_safe_tools(mcp, file_service)
+    _register_file_compat_tools(mcp, file_service)
 
+
+def _register_file_safe_tools(  # noqa: C901
+    mcp: Any,
+    file_service: WorkspaceFileService,
+) -> None:
+    @mcp.tool(name="file.list_sources")  # type: ignore[untyped-decorator]
+    def file_list_sources(include_disabled: bool = False) -> dict[str, Any]:
+        """List available file sources."""
+        return file_service.list_sources(include_disabled=include_disabled)
+
+    @mcp.tool(name="file.find_items")  # type: ignore[untyped-decorator]
+    def file_find_items(
+        source_id: str,
+        query: str = "",
+        parent: dict[str, Any] | str | None = None,
+        recursive: bool = True,
+        item_types: list[str] | None = None,
+        extension_filter: list[str] | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Search files and folders within a configured source."""
+        return file_service.find_items(
+            source_id=source_id,
+            query=query,
+            parent=parent,
+            recursive=recursive,
+            item_types=item_types,
+            extension_filter=extension_filter,
+            limit=limit,
+        )
+
+    @mcp.tool(name="file.resolve_item")  # type: ignore[untyped-decorator]
+    def file_resolve_item(
+        source_id: str,
+        path: str | None = None,
+        alias: str | None = None,
+        remote_ref: dict[str, Any] | None = None,
+        expected_type: str | None = None,
+        allow_missing: bool = False,
+    ) -> dict[str, Any]:
+        """Resolve a file or folder reference from a path, alias, or remote descriptor."""
+        return file_service.resolve_item(
+            source_id=source_id,
+            path=path,
+            alias=alias,
+            remote_ref=remote_ref,
+            expected_type=expected_type,
+            allow_missing=allow_missing,
+        )
+
+    @mcp.tool(name="file.list_children")  # type: ignore[untyped-decorator]
+    def file_list_children(
+        folder_ref: dict[str, Any] | str,
+        recursive: bool = False,
+        limit: int | None = None,
+        include_hidden: bool = False,
+    ) -> dict[str, Any]:
+        """List child items under a folder."""
+        return file_service.list_children(
+            folder_ref,
+            recursive=recursive,
+            limit=limit,
+            include_hidden=include_hidden,
+        )
+
+    @mcp.tool(name="file.get_item_metadata")  # type: ignore[untyped-decorator]
+    def file_get_item_metadata(
+        item_ref: dict[str, Any] | str,
+        hashes: bool = False,
+        permissions_summary: bool = False,
+    ) -> dict[str, Any]:
+        """Inspect file or folder metadata."""
+        return file_service.get_item_metadata(
+            item_ref,
+            hashes=hashes,
+            permissions_summary=permissions_summary,
+        )
+
+    @mcp.tool(name="file.read_text")  # type: ignore[untyped-decorator]
+    def file_read_text(
+        item_ref: dict[str, Any] | str,
+        encoding: str | None = None,
+        max_chars: int | None = None,
+        normalize_newlines: bool = True,
+    ) -> dict[str, Any]:
+        """Read a text-like file."""
+        return file_service.read_text_item(
+            item_ref,
+            encoding=encoding,
+            max_chars=max_chars,
+            normalize_newlines=normalize_newlines,
+        )
+
+    @mcp.tool(name="file.read_text_chunk")  # type: ignore[untyped-decorator]
+    def file_read_text_chunk(
+        item_ref: dict[str, Any] | str,
+        offset: int,
+        length: int,
+        unit: str = "chars",
+        encoding: str | None = None,
+    ) -> dict[str, Any]:
+        """Read a chunk from a text-like file."""
+        return file_service.read_text_chunk(
+            item_ref,
+            offset=offset,
+            length=length,
+            unit=unit,
+            encoding=encoding,
+        )
+
+    @mcp.tool(name="file.extract_document_text")  # type: ignore[untyped-decorator]
+    def file_extract_document_text(
+        item_ref: dict[str, Any] | str,
+        max_chars: int | None = None,
+        extraction_mode: str = "text_only",
+    ) -> dict[str, Any]:
+        """Extract text from a supported document-like file."""
+        return file_service.extract_document_text(
+            item_ref,
+            max_chars=max_chars,
+            extraction_mode=extraction_mode,
+        )
+
+    @mcp.tool(name="file.summarize_item")  # type: ignore[untyped-decorator]
+    def file_summarize_item(
+        item_ref: dict[str, Any] | str,
+        max_chars: int = 4000,
+    ) -> dict[str, Any]:
+        """Prepare a lightweight summary payload for a file."""
+        return file_service.summarize_item(item_ref, max_chars=max_chars)
+
+    @mcp.tool(name="file.open_text_edit_session")  # type: ignore[untyped-decorator]
+    def file_open_text_edit_session(
+        item_ref: dict[str, Any] | str,
+        create_if_missing: bool = False,
+        remote_mode: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a safe text edit session."""
+        return file_service.open_text_edit_session(
+            item_ref,
+            create_if_missing=create_if_missing,
+            remote_mode=remote_mode,
+        )
+
+    @mcp.tool(name="file.stage_replace_text")  # type: ignore[untyped-decorator]
+    def file_stage_replace_text(
+        session_id: str,
+        content: str,
+        encoding: str | None = None,
+        newline_mode: str = "preserve",
+        expected_base_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a full text replacement."""
+        return file_service.stage_replace_text(
+            session_id=session_id,
+            content=content,
+            encoding=encoding,
+            newline_mode=newline_mode,
+            expected_base_hash=expected_base_hash,
+        )
+
+    @mcp.tool(name="file.stage_patch_text")  # type: ignore[untyped-decorator]
+    def file_stage_patch_text(
+        session_id: str,
+        patch_type: str,
+        operations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Stage a patch-based text edit."""
+        return file_service.stage_patch_text(
+            session_id=session_id,
+            patch_type=patch_type,
+            operations=operations,
+        )
+
+    @mcp.tool(name="file.stage_insert_text")  # type: ignore[untyped-decorator]
+    def file_stage_insert_text(
+        session_id: str,
+        position: str,
+        content: str,
+        byte_offset: int | None = None,
+        line_number: int | None = None,
+    ) -> dict[str, Any]:
+        """Stage a text insertion at a specific position."""
+        return file_service.stage_insert_text(
+            session_id=session_id,
+            position=position,
+            content=content,
+            byte_offset=byte_offset,
+            line_number=line_number,
+        )
+
+    @mcp.tool(name="file.stage_append_text")  # type: ignore[untyped-decorator]
+    def file_stage_append_text(session_id: str, content: str) -> dict[str, Any]:
+        """Stage a text append."""
+        return file_service.stage_append_text(session_id=session_id, content=content)
+
+    @mcp.tool(name="file.stage_create_text_file")  # type: ignore[untyped-decorator]
+    def file_stage_create_text_file(
+        parent_folder_ref: dict[str, Any] | str,
+        file_name: str,
+        encoding: str = "utf-8",
+        content: str = "",
+        if_exists: str = "fail",
+    ) -> dict[str, Any]:
+        """Stage creation of a new text file."""
+        return file_service.stage_create_text_file(
+            parent_folder_ref=parent_folder_ref,
+            file_name=file_name,
+            encoding=encoding,
+            content=content,
+            if_exists=if_exists,
+        )
+
+    @mcp.tool(name="file.stage_rename_item")  # type: ignore[untyped-decorator]
+    def file_stage_rename_item(
+        new_name: str,
+        session_id: str | None = None,
+        item_ref: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a rename operation."""
+        return file_service.stage_rename_item(
+            new_name=new_name,
+            session_id=session_id,
+            item_ref=item_ref,
+        )
+
+    @mcp.tool(name="file.stage_move_item")  # type: ignore[untyped-decorator]
+    def file_stage_move_item(
+        destination_folder_ref: dict[str, Any] | str,
+        conflict_policy: str = "fail",
+        session_id: str | None = None,
+        item_ref: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a move operation."""
+        return file_service.stage_move_item(
+            destination_folder_ref=destination_folder_ref,
+            conflict_policy=conflict_policy,
+            session_id=session_id,
+            item_ref=item_ref,
+        )
+
+    @mcp.tool(name="file.stage_copy_item")  # type: ignore[untyped-decorator]
+    def file_stage_copy_item(
+        destination_folder_ref: dict[str, Any] | str,
+        new_name: str | None = None,
+        overwrite: bool = False,
+        session_id: str | None = None,
+        item_ref: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a copy operation."""
+        return file_service.stage_copy_item(
+            destination_folder_ref=destination_folder_ref,
+            new_name=new_name,
+            overwrite=overwrite,
+            session_id=session_id,
+            item_ref=item_ref,
+        )
+
+    @mcp.tool(name="file.stage_create_folder")  # type: ignore[untyped-decorator]
+    def file_stage_create_folder(
+        parent_folder_ref: dict[str, Any] | str,
+        folder_name: str,
+    ) -> dict[str, Any]:
+        """Stage creation of a folder."""
+        return file_service.stage_create_folder(
+            parent_folder_ref=parent_folder_ref,
+            folder_name=folder_name,
+        )
+
+    @mcp.tool(name="file.stage_delete_item")  # type: ignore[untyped-decorator]
+    def file_stage_delete_item(
+        deletion_mode: str = "soft_delete_preferred",
+        session_id: str | None = None,
+        item_ref: dict[str, Any] | str | None = None,
+    ) -> dict[str, Any]:
+        """Stage a delete operation when enabled by policy."""
+        return file_service.stage_delete_item(
+            deletion_mode=deletion_mode,
+            session_id=session_id,
+            item_ref=item_ref,
+        )
+
+    @mcp.tool(name="file.preview_file_edit_session")  # type: ignore[untyped-decorator]
+    def file_preview_file_edit_session(session_id: str) -> dict[str, Any]:
+        """Preview staged file changes."""
+        return file_service.preview_file_edit_session(session_id=session_id)
+
+    @mcp.tool(name="file.validate_file_edit_session")  # type: ignore[untyped-decorator]
+    def file_validate_file_edit_session(session_id: str) -> dict[str, Any]:
+        """Validate a staged file edit session."""
+        return file_service.validate_file_edit_session(session_id=session_id)
+
+    @mcp.tool(name="file.commit_file_edit_session")  # type: ignore[untyped-decorator]
+    def file_commit_file_edit_session(
+        session_id: str,
+        commit_message: str | None = None,
+        require_previewed: bool = True,
+        require_validated: bool | None = None,
+    ) -> dict[str, Any]:
+        """Commit a staged file edit session after preview and validation."""
+        return file_service.commit_file_edit_session(
+            session_id=session_id,
+            commit_message=commit_message,
+            require_previewed=require_previewed,
+            require_validated=require_validated,
+        )
+
+    @mcp.tool(name="file.cancel_file_edit_session")  # type: ignore[untyped-decorator]
+    def file_cancel_file_edit_session(session_id: str) -> dict[str, Any]:
+        """Cancel an active file edit session."""
+        return file_service.cancel_file_edit_session(session_id=session_id)
+
+    @mcp.tool(name="file.list_backups")  # type: ignore[untyped-decorator]
+    def file_list_backups(
+        source_id: str,
+        target: dict[str, Any] | str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """List file backups."""
+        return file_service.list_backups(source_id=source_id, target=target, limit=limit)
+
+    @mcp.tool(name="file.restore_backup")  # type: ignore[untyped-decorator]
+    def file_restore_backup(
+        backup_ref: dict[str, Any] | str,
+        target_override: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a file backup."""
+        return file_service.restore_backup(
+            backup_ref=backup_ref,
+            target_override=target_override,
+        )
+
+
+def _register_file_compat_tools(mcp: Any, file_service: WorkspaceFileService) -> None:
     @mcp.tool()  # type: ignore[untyped-decorator]
     def fs_list_entries(path: str = ".") -> dict[str, Any]:
         """List files and directories under the workspace root."""

@@ -2,6 +2,11 @@
 
 Standalone Docker assets for the `files` MCP server live here.
 
+The current build exposes both:
+
+- legacy compatibility tools such as `fs_list_entries` and `fs_copy_file`
+- safe v1 tools under the `file.*` namespace such as `file.find_items`, `file.read_text`, and `file.open_text_edit_session`
+
 ## Run
 
 From the repository root:
@@ -19,6 +24,13 @@ Stop:
 ```powershell
 docker compose -f docker/mcp-files-server/docker-compose.yml down
 ```
+
+## Config samples
+
+- `docker/mcp-files-server/config.example.toml`
+- `docker/mcp-files-server/config.example.yaml`
+
+Both samples are local-first. When `FILE_MCP_REMOTE_ENABLED=true` and Graph credentials are supplied, the safe `file.*` tools can resolve, search, read, and round-trip edit SharePoint / OneDrive text files. Structural remote operations still remain intentionally limited.
 
 ## Create another isolated server from this folder
 
