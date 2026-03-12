@@ -7,6 +7,7 @@ from typing import Any
 
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.workflow import Workflow
+from orchestra_agent.domain.serialization import workflow_to_dict
 from orchestra_agent.observability import enrich_observation_event
 from orchestra_agent.ports.audit_logger import IAuditLogger
 from orchestra_agent.ports.llm_client import (
@@ -88,8 +89,13 @@ class LlmStepExecutor(IStepExecutor):
     }
     _path_list_keys = {
         "attached_files",
+        "input_files",
         "paths",
         "requested_attachment_paths",
+        "reference_files",
+        "source_files",
+        "target_files",
+        "output_files",
     }
 
     def __init__(
@@ -392,12 +398,7 @@ class LlmStepExecutor(IStepExecutor):
         requested_paths: list[str],
     ) -> dict[str, Any]:
         return {
-            "workflow": {
-                "workflow_id": workflow.workflow_id,
-                "objective": workflow.objective,
-                "reference_files": workflow.reference_files,
-                "feedback_history": workflow.feedback_history,
-            },
+            "workflow": self._sanitize_for_llm(workflow_to_dict(workflow)),
             "step": {
                 "step_id": step.step_id,
                 "name": step.name,
@@ -405,6 +406,10 @@ class LlmStepExecutor(IStepExecutor):
                 "step_runtime": step.tool_ref,
                 "instruction": self._step_instruction(step, resolved_input),
                 "resolved_input": self._sanitize_for_llm(resolved_input),
+                "depends_on": list(step.depends_on),
+                "risk_level": step.risk_level.value,
+                "requires_approval": step.requires_approval,
+                "backup_scope": step.backup_scope.value,
             },
             "step_results": self._sanitize_for_llm(step_results),
             "step_runtime_protocol": {
@@ -453,39 +458,46 @@ class LlmStepExecutor(IStepExecutor):
 
     def _system_prompt(self) -> str:
         return build_system_prompt(
-            (
-            "You are an AI execution controller working through an MCP runtime.\n"
-            "Return ONLY one JSON object per turn using one of these shapes:\n"
-            '{"type":"call_mcp_tool","tool_ref":"...","input":{}}\n'
-            '{"type":"request_file_attachments","paths":["relative/path.ext"],"reason":"..."}\n'
-            '{"type":"write_file","path":"relative/path.txt","content":"..."}\n'
-            '{"type":"finish","result":{}}\n'
-            '{"actions":[{"type":"call_mcp_tool","tool_ref":"...","input":{}},{"type":"finish","result":{}}]}\n'
-            "Rules:\n"
-            "1) Each turn must contain exactly one JSON object.\n"
-            "2) Prefer a single action object, but you may use actions[] to batch a short, "
-            "deterministic sequence of call_mcp_tool/write_file actions plus a final finish "
-            "when you do not need intermediate results to decide later actions.\n"
-            "3) Use only the provided available_mcp_tools[].name values.\n"
-            "4) After a tool call or file write, you will receive a user message with the "
-            "execution result. Use that result to decide the next action.\n"
-            "5) Return finish only when the current step objective is complete, and always "
-            "include result as an object that summarizes the important outcomes of the step. "
-            "That finish.result will be passed to later steps.\n"
-            "6) If step.step_runtime is orchestra.ai_review, focus on analysis and return a "
-            "review result with finish unless an MCP tool is clearly required.\n"
-            "7) Apply real changes through MCP tool calls and workspace writes only.\n"
-            "8) If you need local file contents as true file attachments, return ONLY "
-            "request_file_attachments.\n"
-            "9) request_file_attachments cannot be mixed with execution actions.\n"
-            "10) In actions[], finish must be last and may appear at most once.\n"
-            "11) Keep actions[] short, usually 2 to 4 actions maximum.\n"
-            "12) write_file path must stay inside workspace_root.\n"
-            "13) Use exact argument names from the selected MCP tool contract. Do not invent "
-            "aliases or cross-server arguments.\n"
-            "14) If you receive runtime_error, repair only the last runtime action. Do not "
-            "return a workflow step plan or a top-level steps array.\n"
-            "15) Keep output valid JSON with no commentary."
+            "\n".join(
+                [
+                    "You are the AI execution controller for one already-planned workflow step.",
+                    "Work on the current step only. Do not re-plan the workflow.",
+                    "",
+                    "Return exactly one JSON object per turn using one of these shapes:",
+                    '{"type":"call_mcp_tool","tool_ref":"...","input":{}}',
+                    '{"type":"request_file_attachments","paths":["relative/path.ext"],"reason":"..."}',
+                    '{"type":"write_file","path":"relative/path.txt","content":"..."}',
+                    '{"type":"finish","result":{}}',
+                    '{"actions":[{"type":"call_mcp_tool","tool_ref":"...","input":{}},{"type":"finish","result":{}}]}',
+                    "",
+                    "Execution priorities",
+                    "- First understand workflow objective, constraints, success criteria, current step instruction, resolved_input, and prior step_results.",
+                    "- Then inspect available_mcp_tools, attached_files, and workspace_file_index.",
+                    "- Choose the smallest correct next action for the current step.",
+                    "- Prefer read or inspection actions before mutation when the required state is still uncertain.",
+                    "",
+                    "Rules",
+                    "- Each turn must contain exactly one JSON object.",
+                    "- Prefer a single action object. Use actions[] only for a short deterministic sequence when later actions do not depend on intermediate results.",
+                    "- Use only provided available_mcp_tools[].name values.",
+                    "- Use exact argument names from the selected MCP tool contract. Do not invent aliases or cross-server arguments.",
+                    "- After a tool call or file write, you will receive a user message with the execution result. Use that result to decide the next action unless the sequence was safely batched.",
+                    "- Return finish only when the current step objective is actually complete.",
+                    "- finish.result must always be an object and should summarize status, key outcomes, important findings, output files, changed files, and unresolved issues that later steps need to know.",
+                    "- If the current step is not complete, do not return finish.",
+                    "- If step.step_runtime is orchestra.ai_review, prefer analysis and a direct finish result unless tool evidence is clearly required.",
+                    "- Apply real changes only through MCP tool calls or write_file.",
+                    "- Use write_file only for UTF-8 text files inside workspace_root. Do not use write_file for Excel files, binary files, or other structured artifacts that should be created through MCP tools.",
+                    "- Use workspace-relative paths for files inside workspace_root whenever possible.",
+                    "- If you need local file contents as true file attachments, return only request_file_attachments.",
+                    "- request_file_attachments cannot be mixed with execution actions and should request only files present in workspace_file_index.",
+                    "- In actions[], finish must be last and may appear at most once.",
+                    "- Keep actions[] short, usually 2 to 4 actions maximum.",
+                    "- Do not ask clarifying questions. Use the provided payload, tool calls, or attachment requests instead.",
+                    "- Do not return a workflow step plan, top-level steps array, or any non-runtime schema.",
+                    "- If you receive runtime_error, repair only the last runtime action for the current step.",
+                    "- Keep output valid JSON with no commentary.",
+                ]
             ),
             language=self._language,
             prompt_kind="executor",

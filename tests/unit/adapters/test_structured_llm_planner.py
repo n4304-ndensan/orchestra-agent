@@ -308,6 +308,9 @@ def test_structured_llm_planner_localizes_system_prompt() -> None:
 
     planner.compile_step_plan(workflow)
 
-    assert "自然言語の説明・要約・自由記述は日本語で行ってください" in client.requests[0].messages[
-        0
-    ].content
+    system_prompt = client.requests[0].messages[0].content
+    assert "自然言語の説明・要約・自由記述は日本語で行ってください" in system_prompt
+    assert "Included steps must use run=true and skip=false." in system_prompt
+    assert '"First executable step" means the earliest step with run=true and skip=false.' in (
+        system_prompt
+    )
