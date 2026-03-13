@@ -7,7 +7,6 @@ from typing import Any
 
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.workflow import Workflow
-from orchestra_agent.domain.serialization import workflow_to_dict
 from orchestra_agent.observability import enrich_observation_event
 from orchestra_agent.ports.audit_logger import IAuditLogger
 from orchestra_agent.ports.llm_client import (
@@ -397,8 +396,19 @@ class LlmStepExecutor(IStepExecutor):
         attached_files: list[LlmAttachment],
         requested_paths: list[str],
     ) -> dict[str, Any]:
-        return {
-            "workflow": self._sanitize_for_llm(workflow_to_dict(workflow)),
+        # Compact workflow context — only fields the executor needs
+        workflow_context: dict[str, Any] = {
+            "objective": workflow.objective,
+        }
+        if workflow.constraints:
+            workflow_context["constraints"] = list(workflow.constraints)
+        if workflow.success_criteria:
+            workflow_context["success_criteria"] = list(workflow.success_criteria)
+        if workflow.feedback_history:
+            workflow_context["feedback_history"] = list(workflow.feedback_history)
+
+        payload: dict[str, Any] = {
+            "workflow": self._sanitize_for_llm(workflow_context),
             "step": {
                 "step_id": step.step_id,
                 "name": step.name,
@@ -411,40 +421,46 @@ class LlmStepExecutor(IStepExecutor):
                 "requires_approval": step.requires_approval,
                 "backup_scope": step.backup_scope.value,
             },
-            "step_results": self._sanitize_for_llm(step_results),
             "step_runtime_protocol": {
                 "version": STEP_RUNTIME_PROTOCOL_VERSION,
-                "actions": [
-                    "call_mcp_tool",
-                    "request_file_attachments",
-                    "write_file",
-                    "finish",
-                ],
+                "actions": ["call_mcp_tool", "request_file_attachments", "write_file", "finish"],
                 "compact_multi_action_batch": {
                     "supported": True,
                     "max_actions": 4,
-                    "allowed_actions": ["call_mcp_tool", "write_file", "finish"],
-                    "request_file_attachments_requires_separate_turn": True,
                     "finish_must_be_last": True,
-                    "use_when": (
-                        "Only batch actions when later actions do not depend on intermediate "
-                        "tool or file results."
-                    ),
                 },
-                "finish_result_contract": (
-                    "finish.result is required and becomes the summarized handoff to later steps."
-                ),
+                "finish_result_contract": "finish.result is required and becomes the summarized handoff to later steps.",
             },
             "available_mcp_tools": available_tools,
-            "mcp_tool_catalog_warning": tool_catalog_warning,
             "workspace_root": self._workspace_root.as_posix(),
-            "workspace_file_index": indexed_files,
-            "attached_files": self._sanitize_for_llm(
+        }
+
+        # Only include step_results if non-empty
+        if step_results:
+            payload["step_results"] = self._sanitize_for_llm(step_results)
+
+        # Only include tool catalog warning if present
+        if tool_catalog_warning:
+            payload["mcp_tool_catalog_warning"] = tool_catalog_warning
+
+        # Compact workspace index — only paths, no sizes
+        if indexed_files:
+            payload["workspace_file_index"] = [
+                entry["path"] for entry in indexed_files
+                if isinstance(entry, dict) and isinstance(entry.get("path"), str)
+            ]
+
+        # Only include attached files if present
+        if attached_files:
+            payload["attached_files"] = self._sanitize_for_llm(
                 [attachment.path for attachment in attached_files],
                 key="attached_files",
-            ),
-            "requested_attachment_paths": requested_paths,
-        }
+            )
+
+        if requested_paths:
+            payload["requested_attachment_paths"] = requested_paths
+
+        return payload
 
     def _request_messages(
         self,
@@ -452,9 +468,17 @@ class LlmStepExecutor(IStepExecutor):
         *,
         turn_index: int,
     ) -> tuple[LlmMessage, ...]:
-        if not self._remembers_context or turn_index == 0:
+        if turn_index == 0:
             return tuple(messages)
-        return (messages[-1],)
+        if self._remembers_context:
+            # Provider remembers prior turns; send only the latest message.
+            return (messages[-1],)
+        # Provider does NOT remember context.
+        # Re-sending every accumulated message makes the prompt too large.
+        # Send: system prompt + initial user payload + latest result message.
+        if len(messages) >= 3:
+            return (messages[0], messages[1], messages[-1])
+        return tuple(messages)
 
     def _system_prompt(self) -> str:
         return build_system_prompt(
@@ -463,40 +487,22 @@ class LlmStepExecutor(IStepExecutor):
                     "You are the AI execution controller for one already-planned workflow step.",
                     "Work on the current step only. Do not re-plan the workflow.",
                     "",
-                    "Return exactly one JSON object per turn using one of these shapes:",
+                    "Return exactly one JSON object per turn:",
                     '{"type":"call_mcp_tool","tool_ref":"...","input":{}}',
-                    '{"type":"request_file_attachments","paths":["relative/path.ext"],"reason":"..."}',
-                    '{"type":"write_file","path":"relative/path.txt","content":"..."}',
+                    '{"type":"request_file_attachments","paths":["..."],"reason":"..."}',
+                    '{"type":"write_file","path":"...","content":"..."}',
                     '{"type":"finish","result":{}}',
-                    '{"actions":[{"type":"call_mcp_tool","tool_ref":"...","input":{}},{"type":"finish","result":{}}]}',
+                    '{"actions":[...]} — batch 2-4 actions; finish must be last.',
                     "",
-                    "Execution priorities",
-                    "- First understand workflow objective, constraints, success criteria, current step instruction, resolved_input, and prior step_results.",
-                    "- Then inspect available_mcp_tools, attached_files, and workspace_file_index.",
-                    "- Choose the smallest correct next action for the current step.",
-                    "- Prefer read or inspection actions before mutation when the required state is still uncertain.",
-                    "",
-                    "Rules",
-                    "- Each turn must contain exactly one JSON object.",
-                    "- Prefer a single action object. Use actions[] only for a short deterministic sequence when later actions do not depend on intermediate results.",
-                    "- Use only provided available_mcp_tools[].name values.",
-                    "- Use exact argument names from the selected MCP tool contract. Do not invent aliases or cross-server arguments.",
-                    "- After a tool call or file write, you will receive a user message with the execution result. Use that result to decide the next action unless the sequence was safely batched.",
-                    "- Return finish only when the current step objective is actually complete.",
-                    "- finish.result must always be an object and should summarize status, key outcomes, important findings, output files, changed files, and unresolved issues that later steps need to know.",
-                    "- If the current step is not complete, do not return finish.",
-                    "- If step.step_runtime is orchestra.ai_review, prefer analysis and a direct finish result unless tool evidence is clearly required.",
-                    "- Apply real changes only through MCP tool calls or write_file.",
-                    "- Use write_file only for UTF-8 text files inside workspace_root. Do not use write_file for Excel files, binary files, or other structured artifacts that should be created through MCP tools.",
-                    "- Use workspace-relative paths for files inside workspace_root whenever possible.",
-                    "- If you need local file contents as true file attachments, return only request_file_attachments.",
-                    "- request_file_attachments cannot be mixed with execution actions and should request only files present in workspace_file_index.",
-                    "- In actions[], finish must be last and may appear at most once.",
-                    "- Keep actions[] short, usually 2 to 4 actions maximum.",
-                    "- Do not ask clarifying questions. Use the provided payload, tool calls, or attachment requests instead.",
-                    "- Do not return a workflow step plan, top-level steps array, or any non-runtime schema.",
-                    "- If you receive runtime_error, repair only the last runtime action for the current step.",
-                    "- Keep output valid JSON with no commentary.",
+                    "Rules:",
+                    "- Use only tool names from available_mcp_tools. Use exact argument names from each tool.",
+                    "- Prefer read/inspect before mutate when state is uncertain.",
+                    "- finish.result must summarize status, outcomes, output files, and issues for later steps.",
+                    "- If step_runtime is orchestra.ai_review, prefer analysis + direct finish unless tool evidence is required.",
+                    "- Use write_file only for UTF-8 text files inside workspace_root. Use MCP tools for binary/Excel.",
+                    "- request_file_attachments must be a standalone turn (cannot mix with other actions).",
+                    "- On runtime_error, fix only the last action. Do not return a step plan.",
+                    "- No markdown, no commentary — valid JSON only.",
                 ]
             ),
             language=self._language,

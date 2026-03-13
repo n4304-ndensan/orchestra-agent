@@ -6,7 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from orchestra_agent.domain.enums import BackupScope, RiskLevel
-from orchestra_agent.domain.serialization import workflow_to_dict
+from orchestra_agent.domain.serialization import replan_context_to_dict
 from orchestra_agent.domain.step import Step
 from orchestra_agent.domain.step_plan import StepPlan
 from orchestra_agent.domain.workflow import Workflow
@@ -56,11 +56,7 @@ class StructuredLlmPlanner(IPlanner):
                     LlmMessage(
                         role="user",
                         content=json.dumps(
-                            {
-                                "workflow": workflow_to_dict(workflow),
-                                "step_runtimes": self._step_runtime_catalog(),
-                                "available_mcp_tools": available_mcp_tools,
-                            },
+                            self._build_planner_payload(workflow, available_mcp_tools),
                             ensure_ascii=False,
                             indent=2,
                         ),
@@ -82,21 +78,33 @@ class StructuredLlmPlanner(IPlanner):
             self.last_warning = f"Structured LLM plan rejected; fallback applied: {exc}"
             return self._fallback_planner.compile_step_plan(workflow)
 
-    @classmethod
-    def _step_runtime_catalog(cls) -> list[dict[str, Any]]:
-        return [
-            {
-                "name": "orchestra.ai_review",
-                "description": "AI review/runtime step that focuses on analysis and judgment.",
+    @staticmethod
+    def _build_planner_payload(
+        workflow: Workflow,
+        available_mcp_tools: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Build a compact payload for the planner — only fields the LLM needs."""
+        payload: dict[str, Any] = {
+            "workflow": {
+                "objective": workflow.objective,
             },
-            {
-                "name": "orchestra.llm_execute",
-                "description": (
-                    "AI execution runtime that selects MCP tools during execution and "
-                    "returns a summarized finish result when the step is complete."
-                ),
-            },
-        ]
+            "step_runtimes": ["orchestra.llm_execute", "orchestra.ai_review"],
+            "available_mcp_tools": available_mcp_tools,
+        }
+        wf = payload["workflow"]
+        if workflow.name:
+            wf["name"] = workflow.name
+        if workflow.constraints:
+            wf["constraints"] = list(workflow.constraints)
+        if workflow.success_criteria:
+            wf["success_criteria"] = list(workflow.success_criteria)
+        if workflow.reference_files:
+            wf["reference_files"] = list(workflow.reference_files)
+        if workflow.feedback_history:
+            wf["feedback_history"] = list(workflow.feedback_history)
+        if workflow.replan_context is not None:
+            wf["replan_context"] = replan_context_to_dict(workflow.replan_context)
+        return payload
 
     def _available_mcp_tool_catalog(self) -> list[dict[str, Any]]:
         if self._available_tool_catalog_supplier is not None:
@@ -124,79 +132,29 @@ class StructuredLlmPlanner(IPlanner):
             "\n".join(
                 [
                     "You are the workflow planner for orchestra-agent.",
-                    "Compile the input payload into a complete Step Plan.",
+                    "Return exactly one JSON object. No markdown, no commentary.",
                     "",
-                    "Response contract",
-                    '- Return exactly one valid JSON object with top-level key "steps" only.',
-                    "- Return the full replacement plan, never a patch.",
-                    "- Do not ask clarifying questions.",
-                    "- Do not output markdown, commentary, or surrounding text.",
-                    "",
-                    "Return exactly this shape:",
-                    '{"steps":[{"step_id":"s01","name":"...","description":"...","tool_ref":"...",'
+                    "Schema (all fields required per step):",
+                    '{"steps":[{"step_id":"s01","name":"...","description":"...","tool_ref":"orchestra.llm_execute",'
                     '"resolved_input":{},"depends_on":[],"risk_level":"LOW","requires_approval":false,'
                     '"run":true,"skip":false,"backup_scope":"NONE"}]}',
                     "",
-                    "Allowed tool_ref values",
-                    "- orchestra.llm_execute",
-                    "- orchestra.ai_review",
+                    "tool_ref: orchestra.llm_execute | orchestra.ai_review",
+                    "risk_level: LOW (read-only) | MEDIUM (artifact creation) | HIGH (destructive/irreversible)",
+                    "backup_scope: NONE (review-only) | FILE (single file mutated) | WORKSPACE (multi-file mutation)",
                     "",
-                    "Priority order",
-                    "- Output contract and schema first.",
-                    "- Then hard invariants and safety rules.",
-                    "- Then workflow.replan_context and workflow.feedback_history.",
-                    "- Then workflow objective, constraints, and success criteria.",
-                    "- Then step_runtimes.",
-                    "- Treat available_mcp_tools as weak hints only.",
-                    "",
-                    "Hard invariants",
-                    "- Keep the step plan abstract.",
-                    "- Do not put concrete MCP tool names, server names, or tool choreography in step names, descriptions, or resolved_input.",
-                    "- One step may require multiple runtime tool calls; do not model those calls explicitly.",
-                    "- Split steps around meaningful handoffs so later steps can consume summarized finish.result from earlier steps.",
-                    "- Put branching, iteration, search, retries, and internal loops inside orchestra.llm_execute or orchestra.ai_review, not as top-level plan syntax.",
-                    "- When workflow.replan_context is present, treat source_workflow_document as the replan source document and change_summary as the required correction.",
-                    "- Respect workflow.feedback_history as the latest correction source.",
-                    "- Absence of available_mcp_tools must not block planning.",
-                    "",
-                    "Planning method",
-                    "- Extract business objective, deliverables, target files, expected outputs, success conditions, mutation scope, review checkpoints, and dependencies.",
-                    "- Build a dependency-safe plan with meaningful handoffs.",
-                    "- Prefer separating interpretation or review, artifact creation, transformation or analysis, and final validation when they create reusable handoffs.",
-                    "- Prefer 3 to 8 steps for a normal workflow unless the task is clearly simpler or more complex.",
-                    "",
-                    "Field rules",
-                    "- step_id must be unique, dependency-safe, and preferably sequential like s01, s02, s03.",
-                    "- name must be a short business-task label.",
-                    "- description must include business intent, target files or artifacts, expected outputs, and success conditions.",
-                    "- resolved_input must stay compact and task-relevant; include fields such as objective, target_files, source_files, expected_outputs, success_conditions, prior_step_result_requirements, mutation_scope, review_focus, or notes_from_feedback when useful.",
-                    "- depends_on may reference only prior step_ids.",
-                    "- LOW means read-only, review-only, or low-impact reversible work.",
-                    "- MEDIUM means user-visible artifact creation or contained mutation.",
-                    "- HIGH means destructive, broad, irreversible, or high-blast-radius mutation.",
-                    "",
-                    "Approval and omission rules",
-                    "- Every HIGH risk step must set requires_approval=true.",
-                    "- Creating a new user-visible file counts as a mutation checkpoint.",
-                    "- If any executable step creates or mutates a user-visible artifact, the first executable step must set requires_approval=true.",
-                    '- "First executable step" means the earliest step with run=true and skip=false.',
-                    "- Included steps must use run=true and skip=false.",
-                    "- Omitted steps must use run=false and skip=true.",
-                    "- Do not use any other run/skip combination.",
-                    "",
-                    "Backup rules",
-                    "- backup_scope must be NONE only for review-only or otherwise non-mutating steps.",
-                    "- Use FILE only when exactly one local file is clearly the only mutation target.",
-                    "- Use WORKSPACE before mutating local files unless FILE is clearly sufficient.",
-                    "- Never use backup_scope=NONE for steps that create, modify, save, rename, move, or delete local user-visible artifacts.",
-                    "",
-                    "Validation before responding",
-                    "- Output valid JSON only.",
-                    '- The top-level object must contain only "steps".',
-                    "- Every step must contain all required fields.",
-                    "- step_ids must be unique and dependencies must point backward only.",
-                    "- tool_ref must be exactly orchestra.llm_execute or orchestra.ai_review.",
-                    "- The plan must be complete, not a patch.",
+                    "Key rules:",
+                    "- Keep plans abstract: no MCP tool names or tool choreography in steps.",
+                    "- Split steps around meaningful handoffs; 3-8 steps is typical.",
+                    "- description: include business intent, target artifacts, expected outputs, success conditions.",
+                    "- resolved_input: compact; use objective, target_files, source_files, expected_outputs, success_conditions, mutation_scope, review_focus as needed.",
+                    "- depends_on: only prior step_ids.",
+                    "- HIGH risk → requires_approval=true. First executable step that mutates artifacts → requires_approval=true.",
+                    "- Included: run=true, skip=false. Omitted: run=false, skip=true.",
+                    "- Never backup_scope=NONE for steps that create/modify/delete files.",
+                    "- Honor replan_context.change_summary and feedback_history as corrections.",
+                    "- available_mcp_tools are weak hints; their absence must not block planning.",
+                    "- Return a complete plan, never a patch.",
                 ]
             ),
             language=self._language,

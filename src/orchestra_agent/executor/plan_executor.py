@@ -664,10 +664,33 @@ class PlanExecutor:
             "tool_ref": step.tool_ref,
             "snapshot_phase": "pre_step",
         }
-        file_path = resolved_input.get("file")
+        file_path = self._extract_snapshot_file_path(resolved_input)
         if isinstance(file_path, str):
             metadata["file"] = file_path
+        if snapshot_scope == BackupScope.FILE and "file" not in metadata:
+            # No recognisable single-file key; fall back to WORKSPACE.
+            snapshot_scope = BackupScope.WORKSPACE
+        if snapshot_scope == BackupScope.FILE:
+            try:
+                return self._snapshot_manager.create_snapshot(scope=snapshot_scope, metadata=metadata)
+            except (FileNotFoundError, ValueError):
+                # File doesn't exist yet (creation step) or path invalid; WORKSPACE is safer.
+                snapshot_scope = BackupScope.WORKSPACE
         return self._snapshot_manager.create_snapshot(scope=snapshot_scope, metadata=metadata)
+
+    @staticmethod
+    def _extract_snapshot_file_path(resolved_input: dict[str, Any]) -> str | None:
+        """Extract a single file path from resolved_input for FILE-scoped snapshots."""
+        for key in ("file", "file_path", "target_file", "workbook", "workbook_path"):
+            value = resolved_input.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+        # Accept target_files / source_files when they contain exactly one entry.
+        for key in ("target_files", "source_files"):
+            value = resolved_input.get(key)
+            if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+                return value[0]
+        return None
 
     @classmethod
     def _default_snapshot_scope_for_step(cls, step: Step) -> BackupScope:

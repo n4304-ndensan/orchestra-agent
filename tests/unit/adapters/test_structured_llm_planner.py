@@ -310,7 +310,5 @@ def test_structured_llm_planner_localizes_system_prompt() -> None:
 
     system_prompt = client.requests[0].messages[0].content
     assert "自然言語の説明・要約・自由記述は日本語で行ってください" in system_prompt
-    assert "Included steps must use run=true and skip=false." in system_prompt
-    assert '"First executable step" means the earliest step with run=true and skip=false.' in (
-        system_prompt
-    )
+    assert "Included: run=true, skip=false. Omitted: run=false, skip=true." in system_prompt
+    assert "First executable step that mutates artifacts" in system_prompt
